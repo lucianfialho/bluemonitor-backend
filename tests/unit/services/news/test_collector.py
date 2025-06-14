@@ -308,32 +308,29 @@ class TestNewsCollector:
         mock_db.news.insert_one.return_value = AsyncMock(inserted_id="507f1f77bcf86cd799439011")
         
         # Create a mock for the MongoDB client and database
-        mock_client = MagicMock()
+        mock_client = AsyncMock()
         mock_client.__getitem__.return_value = mock_db
         
         # Create a mock for the MongoDBManager that supports async context manager
-        class AsyncContextManager:
-            def __init__(self, db):
-                self.db = db
-            
-            async def __aenter__(self):
-                return self.db
-                
-            async def __aexit__(self, exc_type, exc_val, exc_tb):
+        @asynccontextmanager
+        async def async_context_manager():
+            try:
+                yield mock_db
+            finally:
                 pass
         
         # Create a mock for the MongoDBManager
-        mock_mongodb_manager = MagicMock()
+        mock_mongodb_manager = AsyncMock()
         
         # Configure the get_db method to return our async context manager
-        mock_mongodb_manager.get_db.return_value = AsyncContextManager(mock_db)
+        mock_mongodb_manager.get_db.return_value = async_context_manager()
         
         # Configure the connect_to_mongodb and close_mongodb_connection methods
         mock_mongodb_manager.connect_to_mongodb = AsyncMock()
         mock_mongodb_manager.close_mongodb_connection = AsyncMock()
         
         # Create a mock for the MongoDBManager class
-        mock_mongodb_class = MagicMock()
+        mock_mongodb_class = AsyncMock()
         mock_mongodb_class.return_value = mock_mongodb_manager
         
         # Patch the MongoDBManager class and fetch_article_content method
@@ -675,28 +672,25 @@ class TestNewsCollector:
         mock_db.news.find_one.return_value = {"original_url": article["link"], "_id": "existing_id"}
         
         # Create a mock for the MongoDB client and database
-        mock_client = MagicMock()
+        mock_client = AsyncMock()
         mock_client.__getitem__.return_value = mock_db
         
         # Create a mock for the MongoDBManager that supports async context manager
-        class AsyncContextManager:
-            def __init__(self, db):
-                self.db = db
-            
-            async def __aenter__(self):
-                return self.db
-                
-            async def __aexit__(self, exc_type, exc_val, exc_tb):
+        @asynccontextmanager
+        async def async_context_manager():
+            try:
+                yield mock_db
+            finally:
                 pass
         
         # Create a mock for the MongoDBManager
-        mock_mongodb_manager = MagicMock()
-        mock_mongodb_manager.get_db.return_value = AsyncContextManager(mock_db)
+        mock_mongodb_manager = AsyncMock()
+        mock_mongodb_manager.get_db.return_value = async_context_manager()
         mock_mongodb_manager.connect_to_mongodb = AsyncMock()
         mock_mongodb_manager.close_mongodb_connection = AsyncMock()
         
         # Create a mock for the MongoDBManager class
-        mock_mongodb_class = MagicMock()
+        mock_mongodb_class = AsyncMock()
         mock_mongodb_class.return_value = mock_mongodb_manager
         
         # Patch the MongoDBManager class
@@ -749,28 +743,25 @@ class TestNewsCollector:
         mock_db.news.insert_one.return_value = AsyncMock(inserted_id="507f1f77bcf86cd799439011")
         
         # Create a mock for the MongoDB client and database
-        mock_client = MagicMock()
+        mock_client = AsyncMock()
         mock_client.__getitem__.return_value = mock_db
         
         # Create a mock for the MongoDBManager that supports async context manager
-        class AsyncContextManager:
-            def __init__(self, db):
-                self.db = db
-            
-            async def __aenter__(self):
-                return self.db
-                
-            async def __aexit__(self, exc_type, exc_val, exc_tb):
+        @asynccontextmanager
+        async def async_context_manager():
+            try:
+                yield mock_db
+            finally:
                 pass
         
         # Create a mock for the MongoDBManager
-        mock_mongodb_manager = MagicMock()
-        mock_mongodb_manager.get_db.return_value = AsyncContextManager(mock_db)
+        mock_mongodb_manager = AsyncMock()
+        mock_mongodb_manager.get_db.return_value = async_context_manager()
         mock_mongodb_manager.connect_to_mongodb = AsyncMock()
         mock_mongodb_manager.close_mongodb_connection = AsyncMock()
         
         # Create a mock for the MongoDBManager class
-        mock_mongodb_class = MagicMock()
+        mock_mongodb_class = AsyncMock()
         mock_mongodb_class.return_value = mock_mongodb_manager
         
         # Patch the MongoDBManager class and fetch_article_content method
