@@ -274,7 +274,7 @@ def _format_news_item_light(item: dict, include_content: bool = False) -> dict:
         "id": str(item.get("_id", "")),
         "title": item.get("title", "Sem título"),
         "description": item.get("description", "") if include_content else "",
-        "url": url,
+        "url": url if url and url.strip() and url.startswith(("http://", "https://")) else "https://source-not-available.com/",
         "source": {
             "name": item.get("source_name", "Fonte desconhecida"),
             "domain": item.get("source_domain", "")
