@@ -187,7 +187,7 @@ def _build_news_query(
     
     # Category filter
     if category:
-        query["categories"] = {"$regex": f"^{category}$", "$options": "i"}
+        query["topic_category"] = {"$regex": f"^{category}$", "$options": "i"}
     
     # Topic filters
     if topic_id:
@@ -411,12 +411,12 @@ async def _get_news_list(
     return formatted_items, total
 
 @router.get("", response_model=NewsListResponse)
-@cache(
-    expire=CACHE_EXPIRE,
-    key_builder=get_news_list_key_builder,
-    namespace="news",
-    coder=PickleCoder
-)
+# @cache(
+#     expire=CACHE_EXPIRE,
+#     key_builder=get_news_list_key_builder,
+#     namespace="news",
+#     coder=PickleCoder
+# )
 async def list_news(
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
