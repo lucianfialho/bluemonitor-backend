@@ -112,7 +112,12 @@ class NewsCollector:
             List of news items with basic information.
         """
         # Configure request parameters
-        params = {'q': query}
+        params = {
+            'q': query,
+            "location": "Brazil",
+            "gl": "br",
+            "hl": "pt-br"
+        }
         
         # Configure headers
         headers = {
