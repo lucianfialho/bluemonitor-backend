@@ -10,11 +10,13 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
 from app.core.config import settings
-from app.core.database import mongodb_manager
+from app.core.database import MongoDBManager
 from app.core.logging import configure_logging
 from app.core.scheduler import scheduler
+from app.core.cache import init_cache, get_redis_pool
 from app.tasks import setup_scheduled_tasks
 from app.api.v1.router import api_router
+from app.middleware.task_cleanup import setup_task_cleanup
 
 # Configure logging
 configure_logging()
@@ -31,10 +33,20 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     This context manager ensures that database connections are properly
     established when the application starts and closed when it shuts down.
     """
+    # Create MongoDB manager instance
+    mongodb_manager = MongoDBManager()
+    
+    # Store the manager in app state
+    app.state.mongodb_manager = mongodb_manager
+    
     # Startup: Connect to MongoDB
     logger.info("Starting application...")
     await mongodb_manager.connect_to_mongodb()
     logger.info("Connected to MongoDB")
+    
+    # Initialize Redis cache
+    await init_cache()
+    logger.info("Redis cache initialized")
     
     # Initialize and start the scheduler
     setup_scheduled_tasks()
@@ -44,12 +56,18 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
-        # Shutdown: Stop the scheduler and close MongoDB connection
+        # Shutdown: Stop the scheduler, close MongoDB connection, and clean up Redis
         logger.info("Shutting down application...")
         scheduler.shutdown()
         logger.info("Scheduler stopped")
         await mongodb_manager.close_mongodb_connection()
         logger.info("Disconnected from MongoDB")
+        
+        # Clean up Redis connection pool
+        redis_pool = get_redis_pool()
+        if redis_pool:
+            await redis_pool.disconnect()
+            logger.info("Redis connection pool closed")
 
 
 # Create FastAPI application
@@ -75,6 +93,9 @@ if settings.BACKEND_CORS_ORIGINS:
 
 # Include API routers
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+# Add task cleanup middleware
+app.add_event_handler("startup", setup_task_cleanup(app))
 
 # Exception handlers
 @app.exception_handler(RequestValidationError)

@@ -5,7 +5,7 @@ from typing import Dict, Any, List
 
 from app.core.config import settings
 from app.core.scheduler import scheduler
-from app.core.database import mongodb_manager
+from app.core.database import MongoDBManager
 from app.services.news.collector import news_collector
 from app.services.ai.topic_cluster import topic_cluster
 
@@ -55,26 +55,41 @@ async def cleanup_old_data() -> None:
     """Task to clean up old data from the database."""
     logger.info("Starting data cleanup...")
     
+    # Create a new MongoDBManager instance
+    mongodb_manager = MongoDBManager()
+    
     try:
-        async with mongodb_manager.get_db() as db:
-            # Delete news articles older than 30 days
-            cutoff_date = datetime.utcnow() - timedelta(days=30)
-            
-            result = await db.news.delete_many({
-                "publish_date": {"$lt": cutoff_date}
-            })
-            
-            logger.info(f"Deleted {result.deleted_count} old news articles")
-            
-            # Clean up topics with no articles
-            result = await db.topics.delete_many({
-                "article_count": 0
-            })
-            
-            logger.info(f"Deleted {result.deleted_count} empty topics")
+        await mongodb_manager.connect_to_mongodb()
         
+        async with mongodb_manager.get_db() as db:
+            try:
+                # Delete news articles older than 30 days
+                cutoff_date = datetime.utcnow() - timedelta(days=30)
+                
+                result = await db.news.delete_many({
+                    "publish_date": {"$lt": cutoff_date}
+                })
+                
+                logger.info(f"Deleted {result.deleted_count} old news articles")
+                
+                # Clean up topics with no articles
+                result = await db.topics.delete_many({
+                    "article_count": 0
+                })
+                
+                logger.info(f"Deleted {result.deleted_count} empty topics")
+                
+            except Exception as e:
+                logger.error(f"Error during cleanup operations: {str(e)}", exc_info=True)
+                raise
+                
     except Exception as e:
-        logger.error(f"Error in data cleanup: {str(e)}", exc_info=True)
+        logger.error(f"Failed to connect to database: {str(e)}", exc_info=True)
+    finally:
+        # Ensure the connection is closed
+        if 'mongodb_manager' in locals():
+            await mongodb_manager.close_mongodb_connection()
+            logger.debug("Database connection closed")
 
 def setup_scheduled_tasks() -> None:
     """Set up all scheduled tasks."""
