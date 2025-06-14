@@ -35,7 +35,23 @@ class TopicCluster:
                 'saúde mental', 'terapia ABA', 'integração sensorial',
                 'tratamento para autismo', 'saúde do autista', 'acompanhamento médico',
                 'terapia para autismo', 'intervenção terapêutica', 'saúde infantil',
-                'desenvolvimento infantil', 'neurodesenvolvimento', 'saúde neurológica'
+                'desenvolvimento infantil', 'neurodesenvolvimento', 'saúde neurológica',
+                # Termos adicionais para medicações e tratamentos
+                'medicamento', 'medicação', 'remédio', 'fármaco', 'droga',
+                'aprovação', 'aprovado', 'liberação', 'liberado', 'autorização', 'autorizado',
+                'anvisa', 'agência nacional de vigilância sanitária',
+                'ministério da saúde', 'secretaria de saúde',
+                'estudo clínico', 'ensaio clínico', 'estudo de fase',
+                'eficácia', 'eficiente', 'efetivo', 'benefício',
+                'efeito colateral', 'efeito adverso', 'contraindicação',
+                'dose', 'dosagem', 'administração', 'prescrição',
+                'tratamento medicamentoso', 'terapia medicamentosa',
+                'neurológico', 'neurologia', 'neurologista',
+                'psiquiátrico', 'psiquiatria', 'psiquiatra',
+                'desenvolvimento neuropsicomotor', 'desenvolvimento cognitivo',
+                'habilidades sociais', 'habilidades comunicativas',
+                'transtorno de processamento sensorial', 'hipersensibilidade sensorial',
+                'sintomas', 'manifestações', 'condições', 'comorbidade'
             ],
             'educacao_inclusiva': [
                 'educação especial', 'sala de recursos', 'professor de apoio',
@@ -45,7 +61,20 @@ class TopicCluster:
                 'ensino especial', 'atendimento educacional especializado',
                 'educação inclusiva', 'práticas pedagógicas', 'currículo adaptado',
                 'projeto pedagógico', 'ensino-aprendizagem', 'mediação escolar',
-                'acessibilidade na educação', 'recursos pedagógicos', 'formação de professores'
+                'acessibilidade na educação', 'recursos pedagógicos', 'formação de professores',
+                # Termos adicionais para educação inclusiva
+                'ensino adaptado', 'aprendizagem adaptada', 'estratégias de ensino',
+                'metodologia inclusiva', 'pedagogia inclusiva', 'didática inclusiva',
+                'escola regular', 'classe regular', 'turma regular', 'ensino regular',
+                'material adaptado', 'material didático adaptado', 'avaliação adaptada',
+                'comunicação alternativa na escola', 'CAA na escola',
+                'PECS na escola', 'método TEACCH', 'método ABA na escola',
+                'apoio escolar', 'auxílio escolar', 'acompanhamento escolar',
+                'monitor escolar', 'tutor escolar', 'mediador escolar',
+                'profissional de apoio', 'acompanhante especializado',
+                'ambiente sensorial na escola', 'escola amiga do autista',
+                'sala sensorial', 'espaço sensorial', 'adaptação sensorial',
+                'inclusão social na escola', 'socialização na escola'
             ],
             'direitos_legislacao': [
                 'lei berenice piana', 'estatuto da pessoa com deficiência',
@@ -59,6 +88,19 @@ class TopicCluster:
                 'assédio', 'xingamento', 'humilhação', 'ofensa', 'ameaça', 'intimidação',
                 'perseguição', 'preconceito', 'discriminação', 'hostilidade', 'ofensa',
                 'constrangimento', 'opressão', 'coerção',
+                # Termos adicionais para discriminação sutil
+                'exclusão', 'isolamento', 'segregação', 'separação',
+                'negligência', 'descaso', 'indiferença', 'falta de atenção',
+                'desrespeito', 'desprezo', 'ridicularização', 'estigmatização',
+                'estereótipo', 'estereotipação', 'rótulo', 'rotulação',
+                'olhar diferente', 'tratar diferente', 'tratamento diferenciado',
+                'barreira atitudinal', 'barreira social', 'microagressão',
+                'não aceitação', 'não inclusão', 'não adaptação',
+                'inadequação', 'não apropriado', 'comportamento inadequado',
+                'não é normal', 'anormal', 'diferente dos outros',
+                'falta de empatia', 'falta de compreensão', 'falta de sensibilidade',
+                'desinformação', 'desconhecimento', 'ignorância',
+                'capacitismo', 'capacitista', 'preconceito sobre deficiência',
                 
                 # Termos específicos para violência física e psicológica
                 'agressão física', 'violência física', 'violência psicológica', 
@@ -96,7 +138,21 @@ class TopicCluster:
             'familia_cuidadores': [
                 'relato de mãe', 'relato de pai', 'cuidadores', 'rede de apoio',
                 'qualidade de vida familiar', 'desafios familiares', 'maternidade atípica',
-                'paternidade atípica', 'grupo de apoio'
+                'paternidade atípica', 'grupo de apoio',
+                # Termos adicionais para desafios familiares
+                'pais', 'mães', 'responsáveis', 'família', 'familiares', 'irmãos',
+                'desafio', 'dificuldade', 'obstáculo', 'barreira', 'problema',
+                'sobrecarga', 'estresse', 'burnout', 'esgotamento', 'exaustão',
+                'rotina', 'dia a dia', 'cotidiano', 'convivência', 'adaptação',
+                'apoio psicológico', 'apoio emocional', 'acolhimento',
+                'suporte familiar', 'orientação familiar', 'aconselhamento',
+                'relação familiar', 'dinâmica familiar', 'ambiente familiar',
+                'experiência familiar', 'vivência familiar', 'história familiar',
+                'vida familiar', 'família atípica', 'família neurodiversa',
+                'impacto familiar', 'impacto na família', 'impacto no cuidador',
+                'bem-estar familiar', 'bem-estar do cuidador', 'qualidade de vida',
+                'cuidado parental', 'criação', 'educação em casa', 'educação familiar',
+                'socialização', 'interação social', 'relacionamento interpessoal'
             ],
             'mercado_trabalho': [
                 'inclusão profissional', 'empregabilidade', 'treinamento profissional',
@@ -263,6 +319,45 @@ class TopicCluster:
         description = article.get('description', '').lower()
         title_desc = f"{title} {description}"
         
+        # Check for multi-word phrases that indicate specific categories
+        # This helps with context that might be missed by single-word matching
+        health_phrases = [
+            'novo medicamento', 'nova medicação', 'novo tratamento', 'nova terapia',
+            'aprovação de medicamento', 'aprovação de tratamento', 'liberação de medicamento',
+            'estudo de medicamento', 'pesquisa de medicamento', 'ensaio clínico',
+            'benefícios do tratamento', 'efeitos do tratamento', 'eficácia do tratamento'
+        ]
+        
+        family_phrases = [
+            'desafios dos pais', 'desafios das mães', 'desafios das famílias',
+            'dificuldades dos cuidadores', 'sobrecarga dos cuidadores', 'estresse dos pais',
+            'experiência parental', 'experiência familiar', 'rotina familiar',
+            'impacto na família', 'impacto nos pais', 'impacto no dia a dia'
+        ]
+        
+        discrimination_phrases = [
+            'tratamento diferenciado', 'olhares diferentes', 'comentários inapropriados',
+            'falta de compreensão', 'falta de empatia', 'falta de inclusão',
+            'barreira atitudinal', 'barreira social', 'não aceitação',
+            'exclusão social', 'isolamento social', 'segregação social'
+        ]
+        
+        # Check for multi-word phrase matches first
+        # Health treatment phrases
+        health_phrase_score = sum(15 for phrase in health_phrases if phrase in text)
+        if health_phrase_score >= 15:
+            return 'saude_tratamento'
+            
+        # Family challenges phrases
+        family_phrase_score = sum(15 for phrase in family_phrases if phrase in text)
+        if family_phrase_score >= 15:
+            return 'familia_cuidadores'
+            
+        # Discrimination phrases
+        discrimination_phrase_score = sum(15 for phrase in discrimination_phrases if phrase in text)
+        if discrimination_phrase_score >= 15:
+            return 'violencia_discriminacao'
+        
         # Special case 1: Check for violence/discrimination first (highest priority)
         violence_terms = self.categories['violencia_discriminacao']
         violence_score = sum(10 for term in violence_terms if term in title_desc)  # Higher weight for title/desc
@@ -291,6 +386,22 @@ class TopicCluster:
         # If it's specifically about autism research
         if research_score >= 3 and is_about_autism and 'pesquisa' in text:
             return 'pesquisa_estatistica'
+            
+        # Special case for health/treatment (medication, therapy, etc.)
+        health_terms = self.categories['saude_tratamento']
+        health_score = sum(5 for term in health_terms if term in title_desc)
+        health_score += sum(1 for term in health_terms if term in text)
+        
+        if health_score >= 5 and any(term in text for term in ['medicamento', 'medicação', 'remédio', 'terapia', 'tratamento']):
+            return 'saude_tratamento'
+            
+        # Special case for family/caregivers
+        family_terms = self.categories['familia_cuidadores']
+        family_score = sum(5 for term in family_terms if term in title_desc)
+        family_score += sum(1 for term in family_terms if term in text)
+        
+        if family_score >= 5 and any(term in text for term in ['família', 'pais', 'mães', 'cuidadores', 'desafio']):
+            return 'familia_cuidadores'
         
         # Calculate scores for all categories with weights
         category_scores = {}
