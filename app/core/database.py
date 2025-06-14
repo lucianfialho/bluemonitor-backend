@@ -120,6 +120,17 @@ class MongoDBManager:
     async def close(self) -> None:
         """Alias for close_mongodb_connection for backward compatibility."""
         await self.close_mongodb_connection()
+
+    def get_database(self) -> AsyncIOMotorDatabase:
+        """Get the database instance.
+        
+        Returns:
+            AsyncIOMotorDatabase: The MongoDB database instance.
+            
+        Raises:
+            RuntimeError: If the database is not initialized.
+        """
+        return self.db
         
     @asynccontextmanager
     async def get_db_client(self) -> AsyncGenerator[AsyncIOMotorClient, None]:
