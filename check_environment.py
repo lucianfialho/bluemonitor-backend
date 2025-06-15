@@ -1,1 +1,0 @@
-scripts/diagnostics/check_environment.py
