@@ -492,8 +492,363 @@ class TopicCluster:
         # If we get here, no category matched well enough
         return 'outros'
 
-    # Resto dos métodos permanecem os mesmos...
-    # [Métodos existentes como _cluster_by_category, cluster_recent_news, etc.]
+    async def cluster_recent_news(self, country: str = 'BR', force_update: bool = False) -> Dict[str, Any]:
+        """Cluster recent news articles into topics and extract facts.
+        
+        Args:
+            country: Country code to filter news by
+            force_update: Whether to force reclustering even if recent clustering was performed
+            
+        Returns:
+            Dictionary with clustering results and statistics
+        """
+        try:
+            start_time = datetime.utcnow()
+            logger.info(f"🚀 Iniciando clustering de notícias para {country}")
+            
+            # Conectar ao banco de dados
+            db_manager = MongoDBManager()
+            await db_manager.connect_to_mongodb()
+            
+            async with db_manager.get_db() as db:
+                # Check if recent clustering was performed (unless forced)
+                if not force_update:
+                    recent_clustering = await db.clustering_logs.find_one(
+                        {
+                            'country': country,
+                            'status': 'completed',
+                            'completed_at': {'$gte': datetime.utcnow() - timedelta(hours=6)}
+                        },
+                        sort=[('completed_at', -1)]
+                    )
+                    
+                    if recent_clustering:
+                        logger.info(f"⏭️ Clustering recente encontrado para {country}, pulando...")
+                        return {
+                            'status': 'skipped',
+                            'reason': 'recent_clustering_exists',
+                            'last_clustering': recent_clustering['completed_at']
+                        }
+                
+                # Log do início do clustering
+                log_id = await self._log_clustering_start(db, country)
+                
+                try:
+                    # 1. Buscar artigos não categorizados
+                    uncategorized_articles = await self._get_uncategorized_articles(db, country)
+                    logger.info(f"📊 Encontrados {len(uncategorized_articles)} artigos não categorizados")
+                    
+                    if not uncategorized_articles:
+                        logger.info("ℹ️ Nenhum artigo novo para clustering")
+                        await self._log_clustering_completion(db, log_id, 0, 0)
+                        return {
+                            'status': 'completed',
+                            'topics_created': 0,
+                            'articles_processed': 0,
+                            'message': 'No new articles to cluster'
+                        }
+                    
+                    # 2. Categorizar artigos
+                    categorized_articles = {}
+                    for article in uncategorized_articles:
+                        category = self._categorize_article(article)
+                        if category not in categorized_articles:
+                            categorized_articles[category] = []
+                        categorized_articles[category].append(article)
+                    
+                    logger.info(f"📁 Artigos categorizados em {len(categorized_articles)} categorias")
+                    
+                    # 3. Fazer clustering por categoria
+                    total_topics_created = 0
+                    total_articles_processed = 0
+                    
+                    for category, articles in categorized_articles.items():
+                        if category == 'irrelevante':
+                            # Marcar como processados mas não criar tópicos
+                            await self._mark_articles_as_processed(db, articles, 'irrelevante')
+                            total_articles_processed += len(articles)
+                            continue
+                        
+                        logger.info(f"🔍 Clustering categoria '{category}' ({len(articles)} artigos)")
+                        
+                        # Clustering dentro da categoria
+                        topics_created = await self._cluster_by_category(db, articles, category, country)
+                        total_topics_created += topics_created
+                        total_articles_processed += len(articles)
+                        
+                        logger.info(f"✅ Categoria '{category}': {topics_created} tópicos criados")
+                    
+                    # 4. NOVA SEÇÃO: Pós-processamento de fatos para todos os tópicos
+                    await self._postprocess_all_topics_facts(db, country)
+                    
+                    # 5. Log de conclusão
+                    await self._log_clustering_completion(db, log_id, total_topics_created, total_articles_processed)
+                    
+                    end_time = datetime.utcnow()
+                    duration = (end_time - start_time).total_seconds()
+                    
+                    logger.info(f"🎉 Clustering concluído: {total_topics_created} tópicos, {total_articles_processed} artigos em {duration:.2f}s")
+                    
+                    return {
+                        'status': 'completed',
+                        'topics_created': total_topics_created,
+                        'articles_processed': total_articles_processed,
+                        'categories_processed': list(categorized_articles.keys()),
+                        'duration_seconds': duration,
+                        'facts_extracted': True  # Novo campo
+                    }
+                    
+                except Exception as e:
+                    # Log de erro
+                    await self._log_clustering_error(db, log_id, str(e))
+                    raise
+                    
+        except Exception as e:
+            logger.error(f"❌ Erro no clustering: {str(e)}", exc_info=True)
+            raise
+
+
+    async def _cluster_by_category(self, db, articles: List[Dict], category: str, country: str) -> int:
+        """Cluster articles within a specific category and extract facts.
+        
+        Args:
+            db: Database connection
+            articles: List of articles to cluster
+            category: Category name
+            country: Country code
+            
+        Returns:
+            Number of topics created
+        """
+        if len(articles) < 2:
+            # Para artigos únicos, criar tópico individual
+            if articles:
+                topic_id = await self._create_single_article_topic(db, articles[0], category, country)
+                # INTEGRAÇÃO: Extrair fatos do tópico único
+                if topic_id:
+                    await self._preprocess_topic_facts(db, str(topic_id), f"Tópico individual - {category}")
+                return 1
+            return 0
+        
+        try:
+            # Extrair embeddings
+            embeddings = []
+            valid_articles = []
+            
+            for article in articles:
+                embedding = article.get('embedding')
+                if embedding and len(embedding) > 0:
+                    embeddings.append(embedding)
+                    valid_articles.append(article)
+            
+            if len(valid_articles) < 2:
+                logger.warning(f"Não há embeddings suficientes para clustering na categoria {category}")
+                return 0
+            
+            # Aplicar DBSCAN clustering
+            embeddings_array = np.array(embeddings)
+            
+            # Parâmetros ajustados para melhor clustering
+            eps = 0.3 if len(valid_articles) > 10 else 0.4
+            min_samples = max(2, min(3, len(valid_articles) // 4))
+            
+            clustering = DBSCAN(eps=eps, min_samples=min_samples, metric='cosine')
+            cluster_labels = clustering.fit_predict(embeddings_array)
+            
+            # Agrupar artigos por cluster
+            clusters = {}
+            noise_articles = []
+            
+            for idx, label in enumerate(cluster_labels):
+                if label == -1:  # Ruído
+                    noise_articles.append(valid_articles[idx])
+                else:
+                    if label not in clusters:
+                        clusters[label] = []
+                    clusters[label].append(valid_articles[idx])
+            
+            # Criar tópicos para cada cluster
+            topics_created = 0
+            
+            for cluster_id, cluster_articles in clusters.items():
+                if len(cluster_articles) >= 2:  # Mínimo 2 artigos por tópico
+                    topic_id = await self._create_topic_from_cluster(db, cluster_articles, category, country)
+                    if topic_id:
+                        # INTEGRAÇÃO: Extrair fatos do tópico
+                        topic_title = await self._get_topic_title(db, topic_id)
+                        await self._preprocess_topic_facts(db, str(topic_id), topic_title)
+                        topics_created += 1
+                else:
+                    noise_articles.extend(cluster_articles)
+            
+            # Processar artigos de ruído como tópicos individuais
+            for article in noise_articles:
+                topic_id = await self._create_single_article_topic(db, article, category, country)
+                if topic_id:
+                    # INTEGRAÇÃO: Extrair fatos do tópico individual
+                    await self._preprocess_topic_facts(db, str(topic_id), f"Tópico individual - {category}")
+                    topics_created += 1
+            
+            return topics_created
+            
+        except Exception as e:
+            logger.error(f"Erro no clustering da categoria {category}: {str(e)}", exc_info=True)
+            return 0
+
+
+    async def _postprocess_all_topics_facts(self, db, country: str) -> None:
+        """Pós-processa fatos para todos os tópicos que ainda não foram processados.
+        
+        Args:
+            db: Database connection
+            country: Country code
+        """
+        try:
+            logger.info(f"🧠 Iniciando pós-processamento de fatos para tópicos do país {country}")
+            
+            # Buscar tópicos que não tiveram fatos processados
+            unprocessed_topics = await db.topics.find({
+                'country_focus': country,
+                'is_active': True,
+                '$or': [
+                    {'facts_processed': {'$exists': False}},
+                    {'facts_processed': False},
+                    {'facts_processed_at': {'$lt': datetime.utcnow() - timedelta(days=1)}}  # Reprocessar diariamente
+                ]
+            }).to_list(length=None)
+            
+            logger.info(f"🔍 Encontrados {len(unprocessed_topics)} tópicos para processamento de fatos")
+            
+            facts_processed_count = 0
+            facts_failed_count = 0
+            
+            for topic in unprocessed_topics:
+                topic_id = str(topic['_id'])
+                topic_name = topic.get('title', 'Tópico sem nome')
+                
+                try:
+                    await self._preprocess_topic_facts(db, topic_id, topic_name)
+                    facts_processed_count += 1
+                except Exception as e:
+                    logger.error(f"❌ Erro ao processar fatos do tópico {topic_name}: {str(e)}")
+                    facts_failed_count += 1
+            
+            logger.info(f"✅ Pós-processamento concluído: {facts_processed_count} sucessos, {facts_failed_count} falhas")
+            
+        except Exception as e:
+            logger.error(f"❌ Erro no pós-processamento de fatos: {str(e)}", exc_info=True)
+
+
+    async def _get_topic_title(self, db, topic_id: ObjectId) -> str:
+        """Busca o título de um tópico pelo ID.
+        
+        Args:
+            db: Database connection
+            topic_id: ObjectId do tópico
+            
+        Returns:
+            Título do tópico ou string padrão
+        """
+        try:
+            topic = await db.topics.find_one({'_id': topic_id}, {'title': 1})
+            return topic.get('title', 'Tópico sem nome') if topic else 'Tópico não encontrado'
+        except Exception:
+            return 'Tópico desconhecido'
+
+
+    async def _create_topic_from_cluster(self, db, articles: List[Dict], category: str, country: str) -> Optional[ObjectId]:
+        """Cria um tópico a partir de um cluster de artigos.
+        
+        Args:
+            db: Database connection
+            articles: Lista de artigos do cluster
+            category: Categoria do tópico
+            country: Código do país
+            
+        Returns:
+            ObjectId do tópico criado ou None se falhou
+        """
+        try:
+            # Gerar título e descrição usando IA
+            title, description = await self._generate_topic_metadata(articles)
+            
+            # Calcular embedding médio
+            embeddings = [article['embedding'] for article in articles if article.get('embedding')]
+            avg_embedding = np.mean(embeddings, axis=0).tolist() if embeddings else []
+            
+            # Preparar dados do tópico
+            topic_data = {
+                'title': title,
+                'description': description,
+                'category': category,
+                'country_focus': country,
+                'articles': [str(article['_id']) for article in articles],
+                'article_count': len(articles),
+                'sources': list(set(article.get('domain', '') for article in articles if article.get('domain'))),
+                'created_at': datetime.utcnow(),
+                'updated_at': datetime.utcnow(),
+                'is_active': True,
+                'embedding': avg_embedding,
+                # Campos para fatos (serão preenchidos depois)
+                'facts_processed': False,
+                'extracted_facts': [],
+                'facts_summary': {},
+                'total_facts_available': 0
+            }
+            
+            # Inserir no banco
+            result = await db.topics.insert_one(topic_data)
+            
+            # Marcar artigos como processados
+            article_ids = [article['_id'] for article in articles]
+            await db.news.update_many(
+                {'_id': {'$in': article_ids}},
+                {
+                    '$set': {
+                        'clustered': True,
+                        'topic_id': str(result.inserted_id),
+                        'updated_at': datetime.utcnow()
+                    }
+                }
+            )
+            
+            logger.debug(f"✅ Tópico criado: {title} (ID: {result.inserted_id})")
+            return result.inserted_id
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao criar tópico: {str(e)}", exc_info=True)
+            return None
+
+
+    # O método _preprocess_topic_facts já existe e está correto!
+    # Basta garantir que ele seja chamado nos momentos certos acima.
+
+    # Também adicione este método de utilidade:
+
+    async def _mark_articles_as_processed(self, db, articles: List[Dict], reason: str) -> None:
+        """Marca artigos como processados sem criar tópicos.
+        
+        Args:
+            db: Database connection
+            articles: Lista de artigos para marcar
+            reason: Motivo do processamento (ex: 'irrelevante')
+        """
+        try:
+            article_ids = [article['_id'] for article in articles]
+            await db.news.update_many(
+                {'_id': {'$in': article_ids}},
+                {
+                    '$set': {
+                        'clustered': True,
+                        'cluster_reason': reason,
+                        'updated_at': datetime.utcnow()
+                    }
+                }
+            )
+            logger.debug(f"✅ {len(articles)} artigos marcados como processados ({reason})")
+        except Exception as e:
+            logger.error(f"❌ Erro ao marcar artigos como processados: {str(e)}", exc_info=True)
+
 
 # Create a singleton instance
 topic_cluster = TopicCluster()

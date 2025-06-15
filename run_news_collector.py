@@ -1,1 +1,0 @@
-scripts/execution/run_news_collector.py

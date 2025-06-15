@@ -1,1 +1,0 @@
-scripts/execution/run_tests.sh
