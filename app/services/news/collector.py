@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.database import MongoDBManager
 from app.services.ai.processor import process_news_content
 from app.schemas.news import NewsCreate
+from app.services.ai.navigation import navigation_system
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +177,7 @@ class NewsCollector:
             return []
     
     async def process_single_news(self, news_item: Dict[str, Any], country: str) -> bool:
-        """Process a single news item.
+        """Process a single news item WITH NAVIGATION PRE-PROCESSING.
         
         Args:
             news_item: News item data from SerpAPI.
@@ -242,21 +243,67 @@ class NewsCollector:
                         source_name = news_item['source']
                         source_domain = url.split('//')[-1].split('/')[0] if url else ''
                     
-                    # Prepare news document
+                    # Extract title and description for navigation processing
+                    title = news_item.get('title', 'Sem título')
+                    description = news_item.get('snippet', '')
+                    
+                    # === NOVO: PRÉ-PROCESSAR NAVEGAÇÃO ===
+                    linkable_terms = []
+                    title_with_links = title
+                    description_with_links = description
+                    
+                    try:
+                        # Combinar título e descrição para análise
+                        full_text = f"{title} {description}".strip()
+                        
+                        if full_text and len(full_text) > 10:  # Só processar se tem conteúdo relevante
+                            # Extrair termos linkáveis
+                            linkable_terms = navigation_system.extract_linkable_terms(full_text)
+                            
+                            # Gerar HTML com links para título
+                            if title and len(title) > 5:
+                                title_with_links = navigation_system.generate_navigation_html(title)
+                            
+                            # Gerar HTML com links para descrição
+                            if description and len(description) > 10:
+                                description_with_links = navigation_system.generate_navigation_html(description)
+                            
+                            logger.debug(f"Navigation processed: {len(linkable_terms)} linkable terms found")
+                        
+                    except Exception as nav_error:
+                        logger.warning(f"Error processing navigation for {url}: {str(nav_error)}")
+                        # Continue sem navegação se der erro
+                        linkable_terms = []
+                        title_with_links = title
+                        description_with_links = description
+                    # === FIM DO PRÉ-PROCESSAMENTO ===
+                    
+                    # Prepare news document WITH NAVIGATION DATA
                     news_doc = {
                         'original_url': url,
-                        'title': news_item.get('title', 'Sem título'),
-                        'description': news_item.get('snippet', ''),
+                        'title': title,
+                        'description': description,
                         'source_name': source_name,
                         'source_domain': source_domain or url.split('//')[-1].split('/')[0] if url else '',
                         'published_at': publish_date,
                         'collection_date': datetime.utcnow(),
                         'country_focus': country.upper(),
                         'in_topic': False,
+                        # === NOVOS CAMPOS DE NAVEGAÇÃO ===
+                        'linkable_terms': linkable_terms,
+                        'title_with_links': title_with_links,
+                        'description_with_links': description_with_links,
+                        'navigation_processed': True,
+                        'navigation_processed_at': datetime.utcnow(),
+                        'total_linkable_terms': len(linkable_terms),
+                        # === FIM DOS NOVOS CAMPOS ===
                         'metadata': {
                             'has_favicon': bool(news_item.get('favicon')),
-                            'has_description': bool(news_item.get('snippet')),
-                            'source': source_name
+                            'has_description': bool(description),
+                            'source': source_name,
+                            # NOVO: Metadados de navegação
+                            'has_navigation': len(linkable_terms) > 0,
+                            'navigation_categories': list(set(term.get('topic_category', '') for term in linkable_terms)) if linkable_terms else []
                         }
                     }
                 else:
@@ -272,17 +319,29 @@ class NewsCollector:
                         'collection_date': datetime.utcnow(),
                         'country_focus': country.upper(),
                         'in_topic': False,
+                        # Campos de navegação vazios para casos sem conteúdo
+                        'linkable_terms': [],
+                        'title_with_links': str(news_item)[:200],
+                        'description_with_links': '',
+                        'navigation_processed': False,
+                        'navigation_processed_at': datetime.utcnow(),
+                        'total_linkable_terms': 0,
                         'metadata': {
                             'has_favicon': False,
                             'has_description': False,
-                            'source': 'Unknown'
+                            'source': 'Unknown',
+                            'has_navigation': False,
+                            'navigation_categories': []
                         }
                     }
                 
                 # Save to database
                 async with mongodb_manager.get_db() as db:
                     result = await db.news.insert_one(news_doc)
-                    logger.info(f"Saved news with ID: {result.inserted_id}")
+                    
+                    # Log sucesso com informações de navegação
+                    nav_info = f"({len(linkable_terms)} links)" if linkable_terms else "(sem navegação)"
+                    logger.info(f"Saved news with ID: {result.inserted_id} {nav_info}")
                     
                 return True
                 

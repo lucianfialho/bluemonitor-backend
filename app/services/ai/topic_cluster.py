@@ -14,6 +14,8 @@ from app.services.ai.processor import ai_processor
 
 logger = logging.getLogger(__name__)
 
+from .fact_extraction import fact_extraction_system
+
 class TopicCluster:
     """Service for clustering news articles into topics."""
     
@@ -293,6 +295,41 @@ class TopicCluster:
         # 1. Tem termos obrigatórios E não tem termos irrelevantes, OU
         # 2. É uma notícia de pesquisa/estatística sobre autismo
         return (has_required and not has_irrelevant) or (is_research and is_about_autism)
+    
+    async def _preprocess_topic_facts(self, db, topic_id: str, topic_name: str) -> None:
+        """Pré-processa fatos para um tópico específico.
+        
+        Args:
+            db: Conexão com banco de dados
+            topic_id: ID do tópico
+            topic_name: Nome do tópico
+        """
+        try:
+            logger.info(f"🧠 Pré-processando fatos para tópico: {topic_name}")
+            
+            # Extrair fatos do tópico
+            facts = await fact_extraction_system.extract_facts_from_topic(db, topic_id)
+            facts_summary = fact_extraction_system.get_facts_summary(facts)
+            
+            # Salvar fatos no tópico
+            await db.topics.update_one(
+                {'_id': ObjectId(topic_id)},
+                {
+                    '$set': {
+                        'extracted_facts': facts[:20],  # Top 20 fatos mais relevantes
+                        'facts_summary': facts_summary,
+                        'facts_processed': True,
+                        'facts_processed_at': datetime.utcnow(),
+                        'total_facts_available': len(facts)
+                    }
+                }
+            )
+            
+            logger.info(f"✅ {topic_name}: {len(facts)} fatos extraídos, {len(facts[:20])} salvos")
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao pré-processar fatos para {topic_name}: {str(e)}")
+            # Não falha o clustering se a extração de fatos der erro
 
     def _categorize_article(self, article: Dict[str, Any]) -> str:
         """Categorize an article into one of the predefined categories.

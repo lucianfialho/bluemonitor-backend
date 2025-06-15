@@ -13,6 +13,8 @@ from app.core.database import MongoDBManager
 from app.api.v1.utils import convert_objectid_to_str
 from app.services.ai.topic_cluster import topic_cluster
 from app.schemas.topics import TopicResponse, TopicListResponse
+from app.schemas.navigation import TopicFactsResponse, ExtractedFact, FactsSummary
+from app.services.ai.fact_extraction import fact_extraction_system
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -431,4 +433,293 @@ async def cluster_topics(
                 "suggestion": "Please try again later or check the logs for more details.",
                 "timestamp": datetime.utcnow().isoformat()
             }
+        )
+
+@router.get("/{topic_id}/facts", response_model=TopicFactsResponse)
+async def get_topic_facts(
+    topic_id: str,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    limit: int = Query(20, le=50, ge=1, description="Maximum number of facts to return"),
+    min_score: float = Query(0.3, ge=0.0, le=1.0, description="Minimum relevance score"),
+    fact_types: Optional[str] = Query(None, description="Filter by fact types (comma-separated)"),
+    include_structured_data: bool = Query(True, description="Include structured data extraction")
+) -> TopicFactsResponse:
+    """
+    Get extracted facts for a specific topic.
+    
+    This endpoint extracts and returns factual information from all news articles
+    belonging to a specific topic. Facts are ranked by relevance and can be filtered
+    by type and minimum score.
+    
+    Args:
+        topic_id: The ID of the topic
+        limit: Maximum number of facts to return (1-50)
+        min_score: Minimum relevance score (0.0-1.0)
+        fact_types: Comma-separated list of fact types to include
+        include_structured_data: Whether to include extracted structured data
+        db: Database connection
+        
+    Returns:
+        Topic information with extracted facts and statistics
+        
+    Raises:
+        HTTPException: If topic not found or invalid ID
+    """
+    try:
+        # Validar ID do tópico
+        if not ObjectId.is_valid(topic_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid topic ID format"
+            )
+        
+        # Buscar dados do tópico
+        topic = await db.topics.find_one({'_id': ObjectId(topic_id), 'is_active': True})
+        if not topic:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Topic not found"
+            )
+        
+        logger.info(f"Extracting facts for topic: {topic.get('title', 'Unknown')} (ID: {topic_id})")
+        
+        # Extrair fatos
+        all_facts = await fact_extraction_system.extract_facts_from_topic(db, topic_id)
+        
+        # Filtrar por score mínimo
+        filtered_facts = [fact for fact in all_facts if fact.get('score', 0) >= min_score]
+        
+        # Filtrar por tipos se especificado
+        if fact_types:
+            requested_types = [t.strip().lower() for t in fact_types.split(',')]
+            filtered_facts = [
+                fact for fact in filtered_facts 
+                if fact.get('type', '').lower() in requested_types
+            ]
+        
+        # Limitar número de resultados
+        final_facts = filtered_facts[:limit]
+        
+        # Remover dados estruturados se não solicitados
+        if not include_structured_data:
+            for fact in final_facts:
+                if 'extracted_data' in fact:
+                    fact['extracted_data'] = {}
+        
+        # Buscar artigos do tópico para estatísticas
+        article_ids = [ObjectId(aid) for aid in topic.get('articles', [])]
+        articles = await db.news.find({'_id': {'$in': article_ids}}).to_list(length=None)
+        
+        # Gerar resumo dos fatos
+        facts_summary = fact_extraction_system.get_facts_summary(filtered_facts)
+        
+        # Estatísticas dos tipos de fatos
+        fact_types_count = {}
+        for fact in filtered_facts:
+            fact_type = fact.get('type', 'geral')
+            fact_types_count[fact_type] = fact_types_count.get(fact_type, 0) + 1
+        
+        # Converter dados do tópico
+        topic_info = convert_objectid_to_str(topic)
+        topic_info.update({
+            'facts_extraction_metadata': {
+                'extracted_at': datetime.utcnow().isoformat(),
+                'total_articles_analyzed': len(articles),
+                'extraction_filters': {
+                    'min_score': min_score,
+                    'fact_types_filter': fact_types,
+                    'limit': limit
+                },
+                'facts_before_filtering': len(all_facts),
+                'facts_after_filtering': len(filtered_facts)
+            }
+        })
+        
+        return TopicFactsResponse(
+            topic_info=topic_info,
+            extracted_facts=[ExtractedFact(**fact) for fact in final_facts],
+            total_facts=len(filtered_facts),
+            fact_types=fact_types_count,
+            source_articles=len(articles),
+            extraction_summary=FactsSummary(**facts_summary)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting facts for topic {topic_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get topic facts: {str(e)}"
+        )
+
+@router.get("/{topic_id}/facts/summary", response_model=Dict[str, Any])
+async def get_topic_facts_summary(
+    topic_id: str,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get a summary of facts for a topic without returning the full fact texts.
+    
+    This is a lightweight endpoint that provides statistics about the facts
+    available for a topic without the overhead of returning full fact content.
+    
+    Args:
+        topic_id: The ID of the topic
+        db: Database connection
+        
+    Returns:
+        Summary statistics about topic facts
+    """
+    try:
+        # Validar ID do tópico
+        if not ObjectId.is_valid(topic_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid topic ID format"
+            )
+        
+        # Buscar dados do tópico
+        topic = await db.topics.find_one(
+            {'_id': ObjectId(topic_id), 'is_active': True},
+            {'title': 1, 'articles': 1, 'category': 1}
+        )
+        if not topic:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Topic not found"
+            )
+        
+        # Extrair fatos (apenas para análise)
+        all_facts = await fact_extraction_system.extract_facts_from_topic(db, topic_id)
+        
+        # Gerar resumo
+        facts_summary = fact_extraction_system.get_facts_summary(all_facts)
+        
+        # Estatísticas por score
+        if all_facts:
+            scores = [fact['score'] for fact in all_facts]
+            high_quality_facts = sum(1 for score in scores if score >= 0.7)
+            medium_quality_facts = sum(1 for score in scores if 0.4 <= score < 0.7)
+            low_quality_facts = sum(1 for score in scores if score < 0.4)
+        else:
+            high_quality_facts = medium_quality_facts = low_quality_facts = 0
+        
+        return {
+            'topic_id': topic_id,
+            'topic_name': topic.get('title', 'Unknown'),
+            'topic_category': topic.get('category', 'Unknown'),
+            'summary': facts_summary,
+            'quality_distribution': {
+                'high_quality': high_quality_facts,
+                'medium_quality': medium_quality_facts,
+                'low_quality': low_quality_facts
+            },
+            'source_articles_count': len(topic.get('articles', [])),
+            'generated_at': datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting facts summary for topic {topic_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get topic facts summary: {str(e)}"
+        )
+
+@router.get("/{topic_id}/facts/types", response_model=Dict[str, Any])
+async def get_topic_fact_types(
+    topic_id: str,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get available fact types for a topic.
+    
+    This endpoint returns the different types of facts available for a topic,
+    useful for building filters in the frontend.
+    
+    Args:
+        topic_id: The ID of the topic
+        db: Database connection
+        
+    Returns:
+        Available fact types with counts and examples
+    """
+    try:
+        # Validar ID do tópico
+        if not ObjectId.is_valid(topic_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid topic ID format"
+            )
+        
+        # Verificar se tópico existe
+        topic = await db.topics.find_one(
+            {'_id': ObjectId(topic_id), 'is_active': True},
+            {'title': 1}
+        )
+        if not topic:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Topic not found"
+            )
+        
+        # Extrair fatos
+        all_facts = await fact_extraction_system.extract_facts_from_topic(db, topic_id)
+        
+        # Agrupar por tipo
+        fact_types_data = {}
+        for fact in all_facts:
+            fact_type = fact.get('type', 'geral')
+            
+            if fact_type not in fact_types_data:
+                fact_types_data[fact_type] = {
+                    'count': 0,
+                    'avg_score': 0.0,
+                    'examples': [],
+                    'highest_score': 0.0
+                }
+            
+            # Atualizar estatísticas
+            fact_types_data[fact_type]['count'] += 1
+            fact_types_data[fact_type]['highest_score'] = max(
+                fact_types_data[fact_type]['highest_score'], 
+                fact.get('score', 0)
+            )
+            
+            # Adicionar exemplo se for dos melhores
+            if len(fact_types_data[fact_type]['examples']) < 2:
+                fact_types_data[fact_type]['examples'].append({
+                    'text': fact.get('text', '')[:150] + '...' if len(fact.get('text', '')) > 150 else fact.get('text', ''),
+                    'score': fact.get('score', 0)
+                })
+        
+        # Calcular médias
+        for fact_type in fact_types_data:
+            type_facts = [fact for fact in all_facts if fact.get('type') == fact_type]
+            if type_facts:
+                fact_types_data[fact_type]['avg_score'] = sum(
+                    fact.get('score', 0) for fact in type_facts
+                ) / len(type_facts)
+        
+        return {
+            'topic_id': topic_id,
+            'topic_name': topic.get('title', 'Unknown'),
+            'total_facts': len(all_facts),
+            'fact_types': fact_types_data,
+            'available_types': list(fact_types_data.keys()),
+            'generated_at': datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting fact types for topic {topic_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get topic fact types: {str(e)}"
         )

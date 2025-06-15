@@ -10,6 +10,10 @@ from enum import Enum
 from bson import ObjectId, errors
 from app.services.task_manager import task_manager
 
+from app.schemas.navigation import EnhancedNewsResponse, LinkableTerm, NavigationMetadata
+from app.services.ai.navigation import navigation_system
+from app.services.ai.fact_extraction import fact_extraction_system
+
 from fastapi import (
     APIRouter, 
     Depends, 
@@ -1090,4 +1094,206 @@ async def collect_news(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error starting news collection: {str(e)}"
+        )
+    
+@router.get("/{news_id}/enhanced", response_model=EnhancedNewsResponse)
+async def get_enhanced_news(
+    news_id: str,
+    request: Request,
+    include_facts: bool = Query(True, description="Include related facts from same topic"),
+    facts_limit: int = Query(5, le=10, description="Maximum number of related facts"),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+) -> EnhancedNewsResponse:
+    """
+    Get news article with navigation links and related facts.
+    
+    This endpoint enhances a news article by:
+    - Adding clickable links to related topics in the text
+    - Providing structured navigation data
+    - Including related facts from the same topic (optional)
+    
+    Args:
+        news_id: The ID of the news article
+        include_facts: Whether to include related facts
+        facts_limit: Maximum number of related facts to return
+        db: Database connection
+        
+    Returns:
+        Enhanced news data with navigation and facts
+        
+    Raises:
+        HTTPException: If news not found or invalid ID
+    """
+    try:
+        # Validar ID
+        if not ObjectId.is_valid(news_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                detail="Invalid news ID format"
+            )
+            
+        # Buscar artigo
+        article = await db.news.find_one({"_id": ObjectId(news_id)})
+        if not article:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail="News article not found"
+            )
+        
+        # Converter para formato da API
+        article_dict = convert_objectid_to_str(article)
+        
+        # Identificar tópico atual
+        current_topic = article.get('topic_title')
+        
+        # Combinar texto para navegação
+        title_text = article.get('title', '')
+        content_text = article.get('content', '')
+        description_text = article.get('description', '')
+        full_text = f"{title_text} {description_text} {content_text}".strip()
+        
+        # Gerar navegação para título
+        if title_text:
+            article_dict['title_with_links'] = navigation_system.generate_navigation_html(
+                title_text, current_topic
+            )
+        
+        # Gerar navegação para conteúdo
+        if content_text:
+            article_dict['content_with_links'] = navigation_system.generate_navigation_html(
+                content_text, current_topic
+            )
+        
+        # Gerar navegação para descrição
+        if description_text:
+            article_dict['description_with_links'] = navigation_system.generate_navigation_html(
+                description_text, current_topic
+            )
+        
+        # Extrair termos linkáveis
+        linkable_terms = navigation_system.extract_linkable_terms(full_text, current_topic)
+        
+        # Criar metadados de navegação
+        navigation_metadata = NavigationMetadata(
+            current_topic=current_topic,
+            has_navigation=len(linkable_terms) > 0,
+            total_linkable_terms=len(linkable_terms),
+            categories_found=list(set(term['topic_category'] for term in linkable_terms)),
+            most_common_category=max(
+                set(term['topic_category'] for term in linkable_terms),
+                key=lambda cat: sum(1 for term in linkable_terms if term['topic_category'] == cat)
+            ) if linkable_terms else None
+        )
+        
+        # Buscar fatos relacionados se solicitado
+        related_facts = []
+        if include_facts and current_topic:
+            # Buscar tópico para obter ID
+            topic = await db.topics.find_one({'title': current_topic, 'is_active': True})
+            if topic:
+                topic_id = str(topic['_id'])
+                all_facts = await fact_extraction_system.extract_facts_from_topic(db, topic_id)
+                # Filtrar fatos do artigo atual e pegar os top N
+                related_facts = [
+                    fact for fact in all_facts 
+                    if fact.get('source_article_id') != news_id
+                ][:facts_limit]
+        
+        # Adicionar dados ao artigo
+        article_dict.update({
+            'has_enhanced_navigation': True,
+            'navigation_generated_at': datetime.utcnow().isoformat(),
+            'total_linkable_terms': len(linkable_terms),
+            'categories_in_text': navigation_metadata.categories_found
+        })
+        
+        return EnhancedNewsResponse(
+            data=article_dict,
+            navigation=navigation_metadata,
+            linkable_terms=[LinkableTerm(**term) for term in linkable_terms],
+            related_facts=related_facts if include_facts else None
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting enhanced news {news_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get enhanced news: {str(e)}"
+        )
+
+@router.get("/{news_id}/navigation", response_model=Dict[str, Any])
+async def get_news_navigation_data(
+    news_id: str,
+    request: Request,
+    format: str = Query("json", description="Output format: 'html' or 'json'"),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get only navigation data for a news article.
+    
+    This endpoint provides navigation data without the full article content,
+    useful for lightweight requests or when you only need the linkable terms.
+    
+    Args:
+        news_id: The ID of the news article
+        format: Output format ('html' or 'json')
+        db: Database connection
+        
+    Returns:
+        Navigation data in the requested format
+    """
+    try:
+        # Validar ID
+        if not ObjectId.is_valid(news_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                detail="Invalid news ID format"
+            )
+            
+        # Buscar artigo
+        article = await db.news.find_one(
+            {"_id": ObjectId(news_id)},
+            {"title": 1, "content": 1, "description": 1, "topic_title": 1}
+        )
+        if not article:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail="News article not found"
+            )
+        
+        # Combinar texto
+        current_topic = article.get('topic_title')
+        full_text = ' '.join([
+            article.get('title', ''),
+            article.get('description', ''),
+            article.get('content', '')
+        ]).strip()
+        
+        if format.lower() == 'html':
+            # Retornar HTML com links
+            html_with_links = navigation_system.generate_navigation_html(full_text, current_topic)
+            return {
+                "format": "html",
+                "content_with_links": html_with_links,
+                "original_content": full_text,
+                "current_topic": current_topic
+            }
+        else:
+            # Retornar dados JSON estruturados
+            navigation_data = navigation_system.generate_navigation_json(full_text, current_topic)
+            return {
+                "format": "json",
+                "navigation_data": navigation_data,
+                "news_id": news_id
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting navigation data for news {news_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get navigation data: {str(e)}"
         )
