@@ -14,6 +14,14 @@ class LinkableTerm(BaseModel):
     original_text: str = Field(..., description="Original text of the term")
     priority: int = Field(..., description="Priority level")
 
+class NavigationMetadata(BaseModel):
+    """Schema for navigation metadata."""
+    current_topic: Optional[str] = Field(None, description="Current topic")
+    has_navigation: bool = Field(..., description="Has navigation links")
+    total_linkable_terms: int = Field(..., description="Total linkable terms")
+    categories_found: List[str] = Field(default_factory=list, description="Categories found")
+    most_common_category: Optional[str] = Field(None, description="Most common category")
+
 class ExtractedData(BaseModel):
     """Schema for structured data extracted from facts."""
     percentages: Optional[List[float]] = Field(None, description="Percentages found")
@@ -38,6 +46,18 @@ class ExtractedFact(BaseModel):
     length: int = Field(..., description="Text length")
     word_count: int = Field(..., description="Word count")
 
+class FactsSummary(BaseModel):
+    """Schema for facts summary."""
+    total_facts: int = Field(..., description="Total number of facts")
+    fact_types: Dict[str, int] = Field(..., description="Count by fact type")
+    avg_score: float = Field(..., description="Average score")
+    top_score: float = Field(..., description="Top score")
+    has_statistics: bool = Field(..., description="Has statistical facts")
+    has_research: bool = Field(..., description="Has research facts")
+    has_legislation: bool = Field(..., description="Has legislation facts")
+    facts_with_structured_data: int = Field(..., description="Facts with structured data")
+    coverage_percentage: float = Field(..., description="Coverage percentage")
+
 class EnhancedNewsResponse(BaseModel):
     """Schema for enhanced news with navigation."""
     data: Dict[str, Any] = Field(..., description="Enhanced news data")
@@ -52,4 +72,4 @@ class TopicFactsResponse(BaseModel):
     total_facts: int = Field(..., description="Total number of facts")
     fact_types: Dict[str, int] = Field(..., description="Count by fact type")
     source_articles: int = Field(..., description="Number of source articles")
-    extraction_summary: Dict[str, Any] = Field(..., description="Summary")
+    extraction_summary: FactsSummary = Field(..., description="Summary")

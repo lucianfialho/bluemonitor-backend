@@ -15,6 +15,7 @@ from app.services.ai.processor import ai_processor
 logger = logging.getLogger(__name__)
 
 from .fact_extraction import fact_extraction_system
+from collections import Counter
 
 class TopicCluster:
     """Service for clustering news articles into topics."""
@@ -849,6 +850,162 @@ class TopicCluster:
         except Exception as e:
             logger.error(f"❌ Erro ao marcar artigos como processados: {str(e)}", exc_info=True)
 
+    async def _log_clustering_start(self, db, country: str) -> str:
+        """Log início do clustering."""
+        try:
+            log_doc = {
+                'country': country,
+                'status': 'started',
+                'started_at': datetime.utcnow(),
+                'process_id': f"clustering_{country}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+            }
+            result = await db.clustering_logs.insert_one(log_doc)
+            logger.info(f"📝 Log de clustering iniciado: {result.inserted_id}")
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"❌ Erro ao criar log de clustering: {str(e)}")
+            return None
 
+    async def _log_clustering_completion(self, db, log_id: str, topics_created: int, articles_processed: int) -> None:
+        """Log conclusão do clustering."""
+        try:
+            if log_id and ObjectId.is_valid(log_id):
+                await db.clustering_logs.update_one(
+                    {'_id': ObjectId(log_id)},
+                    {
+                        '$set': {
+                            'status': 'completed',
+                            'completed_at': datetime.utcnow(),
+                            'topics_created': topics_created,
+                            'articles_processed': articles_processed,
+                            'duration_seconds': None  # Será calculado se necessário
+                        }
+                    }
+                )
+                logger.info(f"📝 Log de clustering atualizado: {log_id}")
+        except Exception as e:
+            logger.error(f"❌ Erro ao atualizar log de clustering: {str(e)}")
+
+    async def _log_clustering_error(self, db, log_id: str, error: str) -> None:
+        """Log erro do clustering."""
+        try:
+            if log_id and ObjectId.is_valid(log_id):
+                await db.clustering_logs.update_one(
+                    {'_id': ObjectId(log_id)},
+                    {
+                        '$set': {
+                            'status': 'error',
+                            'error_at': datetime.utcnow(),
+                            'error_message': error[:1000],  # Limitar tamanho do erro
+                            'completed_at': datetime.utcnow()
+                        }
+                    }
+                )
+                logger.error(f"📝 Log de erro registrado: {log_id}")
+        except Exception as e:
+            logger.error(f"❌ Erro ao registrar erro no log: {str(e)}")
+
+    async def _get_uncategorized_articles(self, db, country: str) -> List[Dict]:
+        """Busca artigos que ainda não foram categorizados."""
+        try:
+            # Buscar artigos não clusterizados do país
+            articles = await db.news.find({
+                'country_focus': country.upper(),
+                '$or': [
+                    {'clustered': {'$exists': False}},
+                    {'clustered': False}
+                ]
+            }).to_list(length=None)
+            
+            logger.info(f"🔍 Encontrados {len(articles)} artigos não categorizados para {country}")
+            return articles
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar artigos não categorizados: {str(e)}")
+            return []
+
+    async def _create_single_article_topic(self, db, article: Dict, category: str, country: str) -> Optional[ObjectId]:
+        """Cria um tópico para um artigo único."""
+        try:
+            title = article.get('title', 'Tópico sem título')
+            description = f"Tópico criado a partir do artigo: {title[:100]}..."
+            
+            topic_data = {
+                'title': title,
+                'description': description,
+                'category': category,
+                'country_focus': country,
+                'articles': [str(article['_id'])],
+                'article_count': 1,
+                'sources': [article.get('source_domain', '')],
+                'created_at': datetime.utcnow(),
+                'updated_at': datetime.utcnow(),
+                'is_active': True,
+                'embedding': article.get('embedding', []),
+                # Campos para fatos
+                'facts_processed': False,
+                'extracted_facts': [],
+                'facts_summary': {},
+                'total_facts_available': 0
+            }
+            
+            result = await db.topics.insert_one(topic_data)
+            
+            # Marcar artigo como processado
+            await db.news.update_one(
+                {'_id': article['_id']},
+                {
+                    '$set': {
+                        'clustered': True,
+                        'topic_id': str(result.inserted_id),
+                        'updated_at': datetime.utcnow()
+                    }
+                }
+            )
+            
+            logger.debug(f"✅ Tópico individual criado: {title[:50]}...")
+            return result.inserted_id
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao criar tópico individual: {str(e)}")
+            return None
+
+    async def _generate_topic_metadata(self, articles: List[Dict]) -> Tuple[str, str]:
+        """Gera título e descrição para um tópico baseado nos artigos."""
+        try:
+            # Extrair títulos dos artigos
+            titles = [article.get('title', '') for article in articles if article.get('title')]
+            
+            if not titles:
+                return "Tópico sem título", "Tópico agrupado automaticamente"
+            
+            # Usar o título mais comum ou o primeiro se não houver padrão
+            if len(titles) == 1:
+                title = titles[0]
+            else:
+                # Encontrar palavras comuns nos títulos
+                words = []
+                for title in titles:
+                    words.extend(title.lower().split())
+                
+                common_words = [word for word, count in Counter(words).most_common(3) 
+                            if len(word) > 3 and word not in ['para', 'sobre', 'como', 'mais']]
+                
+                if common_words:
+                    title = f"Notícias sobre {' '.join(common_words[:2])}"
+                else:
+                    title = titles[0]  # Fallback para o primeiro título
+            
+            # Limitar tamanho do título
+            title = title[:100] if len(title) > 100 else title
+            
+            # Gerar descrição
+            description = f"Tópico agrupando {len(articles)} artigos relacionados"
+            
+            return title, description
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao gerar metadados do tópico: {str(e)}")
+            return "Tópico agrupado", f"Tópico com {len(articles)} artigos"
 # Create a singleton instance
 topic_cluster = TopicCluster()

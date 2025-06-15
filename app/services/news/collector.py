@@ -113,12 +113,7 @@ class NewsCollector:
             List of news items with basic information.
         """
         # Configure request parameters
-        params = {
-            'q': query,
-            "location": "Brazil",
-            "gl": "br",
-            "hl": "pt-br"
-        }
+        params = {'q': query}
         
         # Configure headers
         headers = {
@@ -177,186 +172,106 @@ class NewsCollector:
             return []
     
     async def process_single_news(self, news_item: Dict[str, Any], country: str) -> bool:
-        """Process a single news item WITH NAVIGATION PRE-PROCESSING.
+        """Process a single news item WITH AI PROCESSING.
         
         Args:
             news_item: News item data from SerpAPI.
             country: Country code.
             
         Returns:
-            bool: True if the news item was processed successfully, False otherwise.
+            True if processed successfully, False otherwise.
         """
+        mongodb_manager = MongoDBManager()
+        
         try:
-            # Validate news_item is a dictionary
-            if not isinstance(news_item, dict):
-                logger.error(f"news_item is not a dictionary: {type(news_item)}")
-                return False
-                
-            url = news_item.get('link') if hasattr(news_item, 'get') else None
-            if not url:
-                logger.warning("No URL found in news_item")
-                return False
+            await mongodb_manager.connect_to_mongodb()
             
-            # Check if news already exists
-            mongodb_manager = None
-            try:
-                mongodb_manager = MongoDBManager()
-                await mongodb_manager.connect_to_mongodb()
+            async with mongodb_manager.get_db() as db:
+                # Verificar se o artigo já existe
+                existing = await db.news.find_one({
+                    "$or": [
+                        {"url": news_item.get("link")},
+                        {"title": news_item.get("title")}
+                    ]
+                })
                 
-                async with mongodb_manager.get_db() as db:
-                    existing = await db.news.find_one({"original_url": url})
-                    if existing:
-                        logger.debug(f"News already exists: {url}")
-                        return False
-            except Exception as db_error:
-                logger.error(f"Error checking if news exists in database: {str(db_error)}", exc_info=True)
-                return False
-            finally:
-                if mongodb_manager:
-                    await mongodb_manager.close_mongodb_connection()
-            
-            # Process the news item
-            logger.info(f"Processing news item: {url}")
-            
-            # Create a new MongoDBManager instance for saving
-            mongodb_manager = MongoDBManager()
-            try:
-                await mongodb_manager.connect_to_mongodb()
+                if existing:
+                    logger.debug(f"Article already exists: {news_item.get('title', 'Unknown')}")
+                    return True
                 
-                # Parse publish date with fallback to current time
-                publish_date = self._parse_publish_date(
-                    news_item.get('date') or news_item.get('publish_date'),
-                    default=datetime.utcnow()
-                )
+                # Buscar conteúdo completo do artigo
+                article_content = await self.fetch_article_content(news_item.get("link"))
                 
-                # Safely get source information
-                source_name = ''
-                source_domain = ''
+                if not article_content:
+                    logger.warning(f"Failed to fetch content for: {news_item.get('link')}")
+                    return False
                 
-                if isinstance(news_item, dict):
-                    # Handle case where source is a dictionary
-                    if isinstance(news_item.get('source'), dict):
-                        source_name = news_item['source'].get('name', '')
-                        source_domain = news_item.get('source_domain', '')
-                    # Handle case where source is a string
-                    elif isinstance(news_item.get('source'), str):
-                        source_name = news_item['source']
-                        source_domain = url.split('//')[-1].split('/')[0] if url else ''
-                    
-                    # Extract title and description for navigation processing
-                    title = news_item.get('title', 'Sem título')
-                    description = news_item.get('snippet', '')
-                    
-                    # === NOVO: PRÉ-PROCESSAR NAVEGAÇÃO ===
-                    linkable_terms = []
-                    title_with_links = title
-                    description_with_links = description
-                    
-                    try:
-                        # Combinar título e descrição para análise
-                        full_text = f"{title} {description}".strip()
-                        
-                        if full_text and len(full_text) > 10:  # Só processar se tem conteúdo relevante
-                            # Extrair termos linkáveis
-                            linkable_terms = navigation_system.extract_linkable_terms(full_text)
-                            
-                            # Gerar HTML com links para título
-                            if title and len(title) > 5:
-                                title_with_links = navigation_system.generate_navigation_html(title)
-                            
-                            # Gerar HTML com links para descrição
-                            if description and len(description) > 10:
-                                description_with_links = navigation_system.generate_navigation_html(description)
-                            
-                            logger.debug(f"Navigation processed: {len(linkable_terms)} linkable terms found")
-                        
-                    except Exception as nav_error:
-                        logger.warning(f"Error processing navigation for {url}: {str(nav_error)}")
-                        # Continue sem navegação se der erro
-                        linkable_terms = []
-                        title_with_links = title
-                        description_with_links = description
-                    # === FIM DO PRÉ-PROCESSAMENTO ===
-                    
-                    # Prepare news document WITH NAVIGATION DATA
-                    news_doc = {
-                        'original_url': url,
-                        'title': title,
-                        'description': description,
-                        'source_name': source_name,
-                        'source_domain': source_domain or url.split('//')[-1].split('/')[0] if url else '',
-                        'published_at': publish_date,
-                        'collection_date': datetime.utcnow(),
-                        'country_focus': country.upper(),
-                        'in_topic': False,
-                        # === NOVOS CAMPOS DE NAVEGAÇÃO ===
-                        'linkable_terms': linkable_terms,
-                        'title_with_links': title_with_links,
-                        'description_with_links': description_with_links,
-                        'navigation_processed': True,
-                        'navigation_processed_at': datetime.utcnow(),
-                        'total_linkable_terms': len(linkable_terms),
-                        # === FIM DOS NOVOS CAMPOS ===
-                        'metadata': {
-                            'has_favicon': bool(news_item.get('favicon')),
-                            'has_description': bool(description),
-                            'source': source_name,
-                            # NOVO: Metadados de navegação
-                            'has_navigation': len(linkable_terms) > 0,
-                            'navigation_categories': list(set(term.get('topic_category', '') for term in linkable_terms)) if linkable_terms else []
-                        }
-                    }
-                else:
-                    # If news_item is not a dictionary, create a minimal document
-                    logger.warning(f"Unexpected news_item type: {type(news_item)}")
-                    news_doc = {
-                        'original_url': url,
-                        'title': str(news_item)[:200],  # Truncate if too long
-                        'description': '',
-                        'source_name': 'Unknown',
-                        'source_domain': url.split('//')[-1].split('/')[0] if url else 'unknown',
-                        'published_at': publish_date,
-                        'collection_date': datetime.utcnow(),
-                        'country_focus': country.upper(),
-                        'in_topic': False,
-                        # Campos de navegação vazios para casos sem conteúdo
-                        'linkable_terms': [],
-                        'title_with_links': str(news_item)[:200],
-                        'description_with_links': '',
-                        'navigation_processed': False,
-                        'navigation_processed_at': datetime.utcnow(),
-                        'total_linkable_terms': 0,
-                        'metadata': {
-                            'has_favicon': False,
-                            'has_description': False,
-                            'source': 'Unknown',
-                            'has_navigation': False,
-                            'navigation_categories': []
-                        }
-                    }
+                # Preparar conteúdo para processamento AI
+                content_for_ai = f"{article_content.get('title', '')}\n\n{article_content.get('content', '')}"
                 
-                # Save to database
-                async with mongodb_manager.get_db() as db:
-                    result = await db.news.insert_one(news_doc)
+                if len(content_for_ai.strip()) < 50:
+                    logger.warning(f"Content too short for AI processing: {len(content_for_ai)} chars")
+                    return False
+                
+                # ✅ PROCESSAMENTO AI - ESTA É A PARTE QUE ESTAVA FALTANDO!
+                logger.info(f"🧠 Processing with AI: {article_content.get('title', 'Unknown')[:50]}...")
+                ai_result = await process_news_content(content_for_ai)
+                
+                # Verificar se o AI processamento foi bem-sucedido
+                if not ai_result.get('embedding') or len(ai_result.get('embedding', [])) == 0:
+                    logger.error(f"❌ AI processing failed to generate embedding for: {news_item.get('link')}")
+                    # Continuar mesmo sem embedding, mas registrar o erro
+                
+                # Preparar documento para MongoDB
+                news_doc = {
+                    "title": article_content.get("title", news_item.get("title", "")),
+                    "url": news_item.get("link"),
+                    "original_url": news_item.get("link"),
+                    "content": article_content.get("content", ""),
+                    "description": article_content.get("description", news_item.get("snippet", "")),
+                    "source": {
+                        "name": article_content.get("source", ""),
+                        "domain": article_content.get("domain", ""),
+                        "favicon": article_content.get("favicon", "")
+                    },
+                    "publish_date": self._parse_publish_date(news_item.get("date")),
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow(),
+                    "country": country,
+                    "language": "pt-br",
                     
-                    # Log sucesso com informações de navegação
-                    nav_info = f"({len(linkable_terms)} links)" if linkable_terms else "(sem navegação)"
-                    logger.info(f"Saved news with ID: {result.inserted_id} {nav_info}")
+                    # ✅ RESULTADOS DO PROCESSAMENTO AI
+                    "ai_processed": True,
+                    "individual_summary": ai_result.get("individual_summary", ""),
+                    "embedding": ai_result.get("embedding", []),
+                    "processing_errors": ai_result.get("processing_errors", []),
+                    "processed_at": ai_result.get("processed_at", datetime.utcnow()),
                     
+                    # Campos de status
+                    "clustered": False,
+                    "status": "active"
+                }
+                
+                # Adicionar erros de processamento se houver
+                if ai_result.get("processing_errors"):
+                    news_doc["processing_error"] = f"AI processing had errors: {ai_result['processing_errors']}"
+                
+                # Inserir no banco de dados
+                result = await db.news.insert_one(news_doc)
+                
+                logger.info(f"✅ Processed and saved: {news_doc['title'][:50]}...")
+                logger.debug(f"   - Embedding dimensions: {len(ai_result.get('embedding', []))}")
+                logger.debug(f"   - Summary length: {len(ai_result.get('individual_summary', ''))}")
+                logger.debug(f"   - MongoDB ID: {result.inserted_id}")
+                
                 return True
                 
-            except Exception as e:
-                logger.error(f"Error saving news to database: {str(e)}", exc_info=True)
-                return False
-                
-            finally:
-                if mongodb_manager:
-                    await mongodb_manager.close_mongodb_connection()
-                    
         except Exception as e:
-            logger.error(f"Unexpected error in process_single_news: {str(e)}", exc_info=True)
+            logger.error(f"❌ Error processing article {news_item.get('link', 'unknown')}: {str(e)}", exc_info=True)
             return False
-    
+            
+        finally:
+            await mongodb_manager.close_mongodb_connection()  
     async def process_news_batch(self, query: str, country: str = 'BR') -> Dict[str, Any]:
         """Process a batch of news for a given query.
         
@@ -447,6 +362,227 @@ class NewsCollector:
             results['errors'].append(error_msg)
             results['failed'] = len(news_items) - results['successful']
             return results
+    
+    async def fetch_article_content(self, url: str) -> Optional[Dict[str, Any]]:
+        """Fetch ONLY main article content, avoiding navigation and sidebar noise.
+        
+        Args:
+            url: Article URL to fetch content from.
+            
+        Returns:
+            Dictionary with clean article content or None if failed.
+        """
+        if not url:
+            logger.warning("Empty URL provided for content fetching")
+            return None
+            
+        try:
+            logger.debug(f"Fetching content from: {url}")
+            
+            # Headers without Accept-Encoding to avoid compression issues
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+            }
+            
+            async with httpx.AsyncClient(
+                timeout=30.0, 
+                follow_redirects=True,
+                http2=False  # Force HTTP/1.1 to avoid compression issues
+            ) as client:
+                try:
+                    response = await client.get(url, headers=headers)
+                    response.raise_for_status()
+                    
+                except (httpx.HTTPError, httpx.RequestError) as e:
+                    logger.warning(f"Request failed for {url}: {str(e)}")
+                    return None
+                
+                html_content = response.text
+                if not html_content or len(html_content) < 100:
+                    logger.warning(f"Received very short content from {url}")
+                    return None
+                
+                # Verify HTML content
+                if not any(tag in html_content.lower() for tag in ['<html', '<body', '<div', '<p']):
+                    logger.warning(f"Content doesn't appear to be HTML for {url}")
+                    return None
+                
+                # Parse HTML content
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
+                # AGGRESSIVE CLEANUP - Remove all navigation/sidebar elements
+                unwanted_selectors = [
+                    "script", "style", "nav", "header", "footer", "aside", 
+                    "form", "button", "iframe", "noscript", "meta", "link",
+                    ".menu", ".navigation", ".nav", ".sidebar", ".widget",
+                    ".social", ".share", ".related", ".comments", ".comment",
+                    ".ads", ".advertisement", ".banner", ".popup",
+                    "#menu", "#navigation", "#nav", "#sidebar", "#social",
+                    "[class*='menu']", "[class*='nav']", "[class*='sidebar']",
+                    "[class*='widget']", "[class*='social']", "[class*='ad']"
+                ]
+                
+                for selector in unwanted_selectors:
+                    for element in soup.select(selector):
+                        element.decompose()
+                
+                # Extract title
+                title = ""
+                title_tag = soup.find('title')
+                if title_tag:
+                    title = title_tag.get_text().strip()
+                    # Clean title (remove site name)
+                    title = title.split(' - ')[0].split(' | ')[0].strip()
+                
+                if not title:
+                    h1_tag = soup.find('h1')
+                    if h1_tag:
+                        title = h1_tag.get_text().strip()
+                
+                # Extract description
+                description = ""
+                meta_desc = soup.find('meta', attrs={'name': 'description'})
+                if meta_desc:
+                    description = meta_desc.get('content', '').strip()
+                
+                if not description:
+                    og_desc = soup.find('meta', attrs={'property': 'og:description'})
+                    if og_desc:
+                        description = og_desc.get('content', '').strip()
+                
+                # PRECISE CONTENT EXTRACTION - Priority order
+                content = ""
+                content_found = False
+                
+                # Strategy 1: Look for MAIN CONTENT selectors (most precise)
+                main_content_selectors = [
+                    'article',           # Best option - semantic article tag
+                    '[role="main"]',     # Semantic main role
+                    'main',              # HTML5 main tag
+                    '.entry-content',    # WordPress standard
+                    '.post-content',     # Common blog pattern
+                    '.article-content',  # News sites
+                    '.article-body',     # News sites
+                    '.content-area',     # Many themes
+                    '.post-body'         # Blog pattern
+                ]
+                
+                for selector in main_content_selectors:
+                    try:
+                        content_elem = soup.select_one(selector)
+                        if content_elem:
+                            # Further clean the selected content
+                            for unwanted in content_elem.select('.menu, .nav, .sidebar, .widget, .social, .share, .ads, .related'):
+                                unwanted.decompose()
+                            
+                            content = content_elem.get_text(separator=' ', strip=True)
+                            if len(content) > 200:  # Minimum substantial content
+                                content_found = True
+                                logger.debug(f"Found main content using: {selector} ({len(content)} chars)")
+                                break
+                    except Exception:
+                        continue
+                
+                # Strategy 2: If no main container, get ONLY substantial paragraphs
+                if not content_found:
+                    paragraphs = soup.find_all('p')
+                    content_parts = []
+                    
+                    for p in paragraphs:
+                        text = p.get_text(strip=True)
+                        # Only include paragraphs that look like article content
+                        if (len(text) > 50 and  # Substantial text
+                            not any(skip_word in text.lower() for skip_word in 
+                                   ['menu', 'navegação', 'compartilhar', 'redes sociais', 
+                                    'copyright', 'todos os direitos', 'follow us', 
+                                    'subscribe', 'newsletter', 'cookie'])):
+                            content_parts.append(text)
+                    
+                    if content_parts:
+                        content = ' '.join(content_parts)
+                        content_found = True
+                        logger.debug(f"Found content from {len(content_parts)} clean paragraphs")
+                
+                # Strategy 3: Last resort - look for the longest div with substantial text
+                if not content_found:
+                    divs = soup.find_all('div')
+                    best_div_content = ""
+                    
+                    for div in divs:
+                        div_text = div.get_text(strip=True)
+                        # Look for divs that seem to contain article content
+                        if (200 < len(div_text) < 8000 and  # Reasonable article length
+                            len(div_text) > len(best_div_content)):
+                            # Check if it's not navigation/sidebar content
+                            if not any(skip_word in div_text.lower() for skip_word in 
+                                     ['menu principal', 'navegação', 'todos os direitos',
+                                      'compartilhe', 'redes sociais', 'newsletter']):
+                                best_div_content = div_text
+                    
+                    if best_div_content:
+                        content = best_div_content
+                        content_found = True
+                        logger.debug(f"Found content from best div: {len(content)} chars")
+                
+                # Fallback: Use title + description if no content found
+                if not content_found or len(content) < 100:
+                    if title and description:
+                        content = f"{title}. {description}"
+                        logger.debug(f"Using title + description as fallback content")
+                    elif title:
+                        content = title
+                        logger.debug(f"Using only title as fallback content")
+                
+                # Final content cleanup
+                content = ' '.join(content.split()) if content else ""
+                
+                # Remove any remaining navigation phrases
+                navigation_phrases = [
+                    'home página inicial', 'menu principal', 'navegação',
+                    'compartilhe esta página', 'redes sociais', 'follow us',
+                    'todos os direitos reservados', 'copyright', 'newsletter',
+                    'assine nossa newsletter', 'receba atualizações'
+                ]
+                
+                for phrase in navigation_phrases:
+                    content = content.replace(phrase, '')
+                
+                content = ' '.join(content.split())  # Clean extra spaces
+                
+                # Extract domain info
+                from urllib.parse import urlparse
+                parsed_url = urlparse(url)
+                domain = parsed_url.netloc
+                
+                result = {
+                    'title': title,
+                    'content': content,
+                    'description': description,
+                    'domain': domain,
+                    'url': url,
+                    'source': domain
+                }
+                
+                logger.debug(f"Clean extraction results for {url}:")
+                logger.debug(f"  Title: {len(title)} chars")
+                logger.debug(f"  Content: {len(content)} chars")
+                logger.debug(f"  Description: {len(description)} chars")
+                
+                # Warn if content is still too long (might include navigation)
+                if len(content) > 4000:
+                    logger.warning(f"Content might include navigation elements: {len(content)} chars from {url}")
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"Error fetching article content from {url}: {str(e)}", exc_info=True)
+            return None
 
 # Create a singleton instance
 news_collector = NewsCollector()
