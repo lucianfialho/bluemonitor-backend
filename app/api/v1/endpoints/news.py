@@ -230,21 +230,39 @@ def _build_news_query(
 
 def _format_news_item_light(item: dict, include_content: bool = False) -> dict:
     """Format a news item with minimal fields for list views.
-    Ensures required fields are present and in the correct format.
+    
+    VERSÃO MELHORADA: Mantém performance + adiciona melhorias leves
     """
     from datetime import datetime
     
-    # Get current time for default values
+    # ===== LÓGICA EXISTENTE MANTIDA =====
     now = datetime.utcnow()
     
     # Ensure required fields have proper defaults
     item_id = str(item.get("_id", ""))
     title = item.get("title", "Sem título")
+    
+    # ✅ MELHORIA 1: Validar URL
     url = item.get("url", "")
+    if not url and "original_url" in item:
+        url = item["original_url"]
+    
+    # Validar se URL é válida
+    if url == "https://source-not-available.com/" or not (url and url.startswith(("http://", "https://"))):
+        url = None
+    
     source_name = item.get("source_name", "Fonte desconhecida")
     source_domain = item.get("source_domain", "")
     
-    # Handle dates - ensure they are datetime objects
+    # ✅ MELHORIA 2: Auto-gerar description básica
+    description = item.get("description", "")
+    auto_generated_desc = False
+    if not description and item.get("content") and len(item["content"]) > 50:
+        content = item["content"]
+        description = content[:150] + "..." if len(content) > 150 else content
+        auto_generated_desc = True
+    
+    # Handle dates (mantido como está)
     published_at = item.get("published_at")
     if isinstance(published_at, str):
         try:
@@ -259,37 +277,55 @@ def _format_news_item_light(item: dict, include_content: bool = False) -> dict:
         except (ValueError, AttributeError):
             created_at = now
     
-    updated_at = item.get("updated_at", created_at)  # Default to created_at if not provided
+    updated_at = item.get("updated_at", created_at)
     if isinstance(updated_at, str):
         try:
             updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
         except (ValueError, AttributeError):
-            updated_at = created_at  # Fallback to created_at if updated_at is invalid
+            updated_at = created_at
     elif updated_at is None:
-        updated_at = created_at  # Fallback to created_at if updated_at is missing
+        updated_at = created_at
     
-    # Ensure URL is a string and not empty
-    url = item.get("url", "")
-    if not url and "original_url" in item:
-        url = item["original_url"]
+    # ✅ MELHORIA 3: Enriquecimento leve para listas
+    categories = item.get("categories", [])
+    if not categories:
+        categories = auto_categorize_news(title, description)[:2]  # Max 2 para listas
+    
+    # ✅ MELHORIA 4: Sentiment básico
+    sentiment = item.get("sentiment")
+    if not sentiment:
+        sentiment = auto_analyze_sentiment(title, description)
+    
+    # ✅ MELHORIA 5: Keywords básicas
+    keywords = item.get("keywords", [])
+    if not keywords:
+        keywords = extract_keywords_smart(title, description)[:5]  # Max 5 para listas
+    
+    # ✅ MELHORIA 6: Source melhorado
+    source_id = generate_source_id(source_domain) if source_domain else None
+    reliability_score = calculate_source_reliability(source_domain)
     
     # Build the result with proper defaults
     result = {
         "id": str(item.get("_id", "")),
-        "title": item.get("title", "Sem título"),
-        "description": item.get("description", "") if include_content else "",
-        "url": url if url and url.strip() and url.startswith(("http://", "https://")) else "https://source-not-available.com/",
+        "title": title,
+        "description": description if include_content else "",  # ✅ Melhorada
+        "url": url,  # ✅ Validada
         "source": {
-            "name": item.get("source_name", "Fonte desconhecida"),
-            "domain": item.get("source_domain", "")
+            "id": source_id,  # ✅ NOVO
+            "name": source_name,
+            "domain": source_domain,
+            "reliability_score": reliability_score  # ✅ NOVO
         },
         "published_at": published_at,
         "image": {
             "url": str(item["image_url"])
         } if item.get("image_url") else None,
-        "categories": item.get("categories", []),
+        "categories": categories,  # ✅ Melhorada
         "topic_id": str(item["topic_id"]) if item.get("topic_id") else None,
         "topic_category": item.get("topic_category"),
+        "sentiment": sentiment,  # ✅ NOVO
+        "keywords": keywords,  # ✅ NOVO
         "topics": item.get("topics", []),
         "language": item.get("language", "pt"),
         "country": item.get("country", "BR"),
@@ -297,11 +333,23 @@ def _format_news_item_light(item: dict, include_content: bool = False) -> dict:
         "updated_at": updated_at
     }
     
-    # Include content if requested
+    # ✅ MELHORIA 7: Metadata de qualidade básico
+    result["metadata"] = {
+        "data_quality_score": calculate_quality_score(result),
+        "has_image": bool(item.get("image_url")),
+        "has_content": bool(item.get("content")),
+        "has_valid_url": bool(url),
+        "is_recent": is_article_recent(published_at),
+        "auto_generated_description": auto_generated_desc,
+        "source_reliability": reliability_score
+    }
+    
+    # Include content if requested (mantido)
     if include_content:
         result["content"] = item.get("content", "")
     
     return result
+
 
 from fastapi_cache.decorator import cache
 from fastapi_cache.backends.redis import RedisBackend
@@ -540,15 +588,11 @@ async def list_news(
 def format_news_item(item: dict, include_full_content: bool = True) -> dict:
     """Format a news item for API response.
     
-    Args:
-        item: The news item dictionary from the database
-        include_full_content: Whether to include full content and description
-        
-    Returns:
-        dict: Formatted news item with consistent structure
+    VERSÃO MELHORADA: Mantém toda a lógica existente + melhorias pontuais
     """
     from datetime import datetime
     
+    # ===== LÓGICA EXISTENTE MANTIDA =====
     # Get the best available content (prefer content over description)
     content = item.get("content")
     if not content and "description" in item:
@@ -559,6 +603,10 @@ def format_news_item(item: dict, include_full_content: bool = True) -> dict:
     if not url and "original_url" in item:
         url = item["original_url"]
     
+    # ✅ MELHORIA 1: Validar URLs inválidas
+    if url == "https://source-not-available.com/" or not (url and url.startswith(("http://", "https://"))):
+        url = None
+    
     # Get source information with fallbacks
     source_name = item.get("source_name")
     if not source_name and "source" in item and isinstance(item["source"], dict):
@@ -568,6 +616,19 @@ def format_news_item(item: dict, include_full_content: bool = True) -> dict:
     source_domain = item.get("source_domain", "")
     if not source_domain and "source" in item and isinstance(item["source"], dict):
         source_domain = item["source"].get("domain", "")
+    
+    # ✅ MELHORIA 2: Auto-gerar description se vazia
+    description = item.get("description", "")
+    auto_generated_desc = False
+    if not description and content and len(content) > 50:
+        description = content[:200].strip()
+        if len(content) > 200:
+            last_period = description.rfind('.')
+            if last_period > 150:
+                description = description[:last_period + 1]
+            else:
+                description += "..."
+        auto_generated_desc = True
     
     # Format published_at - ensure it's a datetime object or None
     published_at = item.get("published_at")
@@ -601,7 +662,7 @@ def format_news_item(item: dict, include_full_content: bool = True) -> dict:
     elif "topic_ids" in item and isinstance(item["topic_ids"], list):
         topics = [str(topic_id) for topic_id in item["topic_ids"]]
     
-    # Prepare sentiment data
+    # ✅ MELHORIA 3: Melhorar análise de sentiment
     sentiment = None
     if "sentiment_score" in item or "sentiment_label" in item:
         sentiment = {
@@ -613,6 +674,19 @@ def format_news_item(item: dict, include_full_content: bool = True) -> dict:
             "score": float(item["sentiment"].get("score", 0.0)),
             "label": str(item["sentiment"].get("label", "neutral"))
         }
+    # ✅ NOVO: Auto-análise se não existe
+    elif not sentiment:
+        sentiment = auto_analyze_sentiment(item.get("title", ""), description)
+    
+    # ✅ MELHORIA 4: Auto-categorização se vazia
+    categories = item.get("categories", [])
+    if not categories:
+        categories = auto_categorize_news(item.get("title", ""), content or description)
+    
+    # ✅ MELHORIA 5: Keywords extraídas se vazias
+    keywords = item.get("keywords", [])
+    if not keywords:
+        keywords = extract_keywords_smart(item.get("title", ""), content or description)
     
     # Get favicon from favicon_url, favicon, or source.favicon
     favicon = None
@@ -622,6 +696,9 @@ def format_news_item(item: dict, include_full_content: bool = True) -> dict:
         favicon = str(item["favicon"])
     elif "source" in item and isinstance(item["source"], dict) and item["source"].get("favicon"):
         favicon = str(item["source"]["favicon"])
+    # ✅ MELHORIA 6: Auto-gerar favicon se não existe
+    elif source_domain and source_domain != "source-not-available.com":
+        favicon = f"https://{source_domain}/favicon.ico"
     
     # Get language and country with fallbacks
     language = str(item.get("language", "pt")).lower()
@@ -630,7 +707,7 @@ def format_news_item(item: dict, include_full_content: bool = True) -> dict:
     # Get timestamps with fallbacks
     created_at = item.get("created_at", datetime.utcnow())
     updated_at = item.get("updated_at", datetime.utcnow())
-    published_at = item.get("published_at", created_at)  # Fallback para created_at se published_at não existir
+    published_at = item.get("published_at", created_at)
     
     # Handle datetime objects for JSON serialization
     if hasattr(created_at, 'isoformat'):
@@ -640,31 +717,39 @@ def format_news_item(item: dict, include_full_content: bool = True) -> dict:
     if hasattr(published_at, 'isoformat'):
         published_at = published_at.isoformat()
     else:
-        # Se published_at não for um objeto de data/hora, tenta converter para string
         published_at = str(published_at) if published_at is not None else created_at
+    
+    # ✅ MELHORIA 7: Source ID gerado
+    source_id = generate_source_id(source_domain) if source_domain else None
     
     # Build the response dictionary with all required fields
     response = {
         "id": str(item.get("_id", "")),
         "title": str(item.get("title", "")),
-        "description": str(item.get("description", "")) if include_full_content else "",
+        "description": description,  # ✅ Melhorada
         "content": str(content) if include_full_content and content else "",
-        "url": str(url) if url else "",
+        "url": url,  # ✅ Validada
         "source": {
+            "id": source_id,  # ✅ NOVO
             "name": str(source_name),
             "domain": str(source_domain),
-            "favicon": favicon
+            "favicon": favicon,
+            "reliability_score": calculate_source_reliability(source_domain)  # ✅ NOVO
         } if favicon else {
+            "id": source_id,  # ✅ NOVO
             "name": str(source_name),
-            "domain": str(source_domain)
+            "domain": str(source_domain),
+            "reliability_score": calculate_source_reliability(source_domain)  # ✅ NOVO
         },
         "published_at": published_at,
         "image": image,
         "topics": topics,
-        "categories": item.get("categories", []),
+        "categories": categories,  # ✅ Melhorada
         "topic_id": str(item["topic_id"]) if item.get("topic_id") else None,
         "topic_category": item.get("topic_category"),
-        "sentiment": sentiment,
+        "sentiment": sentiment,  # ✅ Melhorada
+        "keywords": keywords,  # ✅ Melhorada
+        "entities": item.get("entities", []),
         "language": language,
         "country": country,
         "created_at": created_at,
@@ -672,7 +757,7 @@ def format_news_item(item: dict, include_full_content: bool = True) -> dict:
         "metadata": {}
     }
     
-    # Add metrics if present
+    # Add metrics if present (mantido como está)
     if "metrics" in item and item["metrics"]:
         response["metrics"] = {
             "views": int(item["metrics"].get("views", 0)),
@@ -681,23 +766,36 @@ def format_news_item(item: dict, include_full_content: bool = True) -> dict:
             "avg_read_time": int(item["metrics"].get("avg_read_time", 0))
         }
     
-    # Add metadata flags
+    # ✅ MELHORIA 8: Metadata enriquecido
     response["metadata"] = {
+        # Metadata original mantido
         "has_image": bool(image and image.get("url")),
         "has_favicon": bool(favicon),
         "has_description": bool(item.get("description")),
         "language": language,
         "country": country,
         "processed_at": item.get("processed_at") or datetime.utcnow().isoformat(),
-        "source": source_domain
+        "source": source_domain,
+        
+        # Novos campos de qualidade
+        "auto_generated_description": auto_generated_desc,
+        "data_quality_score": calculate_quality_score(response),
+        "content_length": len(content) if content else 0,
+        "title_length": len(item.get("title", "")),
+        "reading_time_estimate": estimate_reading_time(content),
+        "is_recent": is_article_recent(published_at),
+        "has_valid_url": bool(url),
+        "processing_enhanced": True
     }
     
-    # Add any additional metadata from the item
+    # Add any additional metadata from the item (mantido)
     if isinstance(item.get("metadata"), dict):
         response["metadata"].update(item["metadata"])
     
-    # Remove None values from the response
+    # Remove None values from the response (mantido)
     return {k: v for k, v in response.items() if v is not None}
+
+
 
 
 @router.get(
@@ -1297,3 +1395,135 @@ async def get_news_navigation_data(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get navigation data: {str(e)}"
         )
+
+def auto_analyze_sentiment(title: str, description: str = "") -> Optional[dict]:
+    """Análise rápida de sentimento."""
+    text = f"{title} {description}".lower()
+    
+    if not text.strip():
+        return None
+    
+    positive_words = ["aprovado", "sucesso", "melhoria", "avanço", "conquista", "inclusão"]
+    negative_words = ["falta", "problema", "dificuldade", "denúncia", "discriminação"]
+    
+    pos_count = sum(1 for word in positive_words if word in text)
+    neg_count = sum(1 for word in negative_words if word in text)
+    
+    if pos_count > neg_count:
+        return {"score": 0.3, "label": "positive"}
+    elif neg_count > pos_count:
+        return {"score": -0.3, "label": "negative"}
+    else:
+        return {"score": 0.0, "label": "neutral"}
+
+def auto_categorize_news(title: str, content: str = "") -> List[str]:
+    """Categorização automática básica."""
+    text = f"{title} {content}".lower()
+    categories = []
+    
+    category_map = {
+        "Educação": ["escola", "educação", "ensino", "professor"],
+        "Saúde": ["médico", "terapia", "tratamento", "diagnóstico"],
+        "Direitos": ["lei", "direito", "projeto", "aprovado"],
+        "Tecnologia": ["app", "digital", "tecnologia", "sistema"],
+        "Inclusão": ["inclusão", "acessibilidade", "discriminação"]
+    }
+    
+    for category, keywords in category_map.items():
+        if any(keyword in text for keyword in keywords):
+            categories.append(category)
+    
+    return categories[:3]
+
+def extract_keywords_smart(title: str, content: str = "") -> List[str]:
+    """Extração básica de keywords."""
+    text = f"{title} {content}".lower()
+    keywords = set()
+    
+    # Keywords específicas do autismo
+    autism_terms = ["autismo", "tea", "autista", "espectro", "inclusão"]
+    for term in autism_terms:
+        if term in text:
+            keywords.add(term)
+    
+    # Palavras importantes do título
+    title_words = [word for word in title.split() 
+                  if len(word) > 4 and word.lower() not in ["para", "com", "sobre"]]
+    keywords.update(title_words[:3])
+    
+    return list(keywords)[:8]
+
+def generate_source_id(domain: str) -> str:
+    """Gerar ID da fonte."""
+    if not domain:
+        return "unknown"
+    import hashlib
+    clean_domain = domain.lower().replace("www.", "")
+    return hashlib.md5(clean_domain.encode()).hexdigest()[:8]
+
+def calculate_source_reliability(domain: str) -> float:
+    """Calcular confiabilidade da fonte."""
+    if not domain:
+        return 0.5
+    
+    reliable_domains = {
+        "g1.globo.com": 0.9,
+        "folha.uol.com.br": 0.9,
+        "gov.br": 0.9
+    }
+    
+    domain_clean = domain.lower().replace("www.", "")
+    
+    for known, score in reliable_domains.items():
+        if known in domain_clean:
+            return score
+    
+    if ".gov.br" in domain_clean:
+        return 0.85
+    elif ".edu.br" in domain_clean:
+        return 0.8
+    
+    return 0.6
+
+def calculate_quality_score(item: dict) -> float:
+    """Calcular score de qualidade."""
+    score = 0
+    checks = 6
+    
+    if item.get("title"): score += 1
+    if item.get("description"): score += 1
+    if item.get("url"): score += 1
+    if item.get("source", {}).get("name"): score += 1
+    if item.get("published_at"): score += 1
+    if item.get("categories"): score += 1
+    
+    return round(score / checks, 2)
+
+def estimate_reading_time(content: str) -> int:
+    """Estimar tempo de leitura."""
+    if not content:
+        return 0
+    word_count = len(content.split())
+    return max(30, int((word_count / 200) * 60))
+
+def is_article_recent(published_at) -> bool:
+    """Verificar se é recente."""
+    if not published_at:
+        return False
+    
+    from datetime import datetime, timedelta
+    
+    if isinstance(published_at, str):
+        try:
+            published_at = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+        except:
+            return False
+    
+    if not isinstance(published_at, datetime):
+        return False
+    
+    now = datetime.utcnow()
+    if published_at.tzinfo:
+        now = now.replace(tzinfo=published_at.tzinfo)
+    
+    return (now - published_at).days <= 7
