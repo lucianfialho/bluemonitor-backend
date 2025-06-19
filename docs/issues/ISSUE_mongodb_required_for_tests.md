@@ -1,23 +1,31 @@
-# MongoDB obrigatório para execução dos testes de integração
+# Erro de conexão com MongoDB nos testes automatizados
 
 **Descrição:**
-Os testes automatizados de integração do backend dependem de uma instância do MongoDB acessível em `localhost:27017`. Atualmente, ao rodar os testes sem o MongoDB, ocorrem erros de conexão (`Connection refused`) e falhas relacionadas à ausência do atributo `mongodb_manager` no app de teste.
+Ao rodar os testes automatizados, diversos testes de integração falham devido à impossibilidade de conectar ao MongoDB local (`localhost:27017`). O erro reportado é:
+
+```
+pymongo.errors.ServerSelectionTimeoutError: localhost:27017: [Errno 111] Connection refused
+```
 
 **Impacto:**
-- Testes de integração que dependem do banco de dados não são executados corretamente.
-- Não é possível validar o comportamento completo da aplicação sem o ambiente de banco configurado.
+Os testes que dependem de acesso ao banco de dados não são executados corretamente, impedindo a validação completa do backend.
 
 **Como reproduzir:**
-1. Execute `pytest` no projeto sem um MongoDB rodando.
-2. Observe erros como:
-   - `pymongo.errors.ServerSelectionTimeoutError: localhost:27017: [Errno 111] Connection refused`
-   - `AttributeError: 'State' object has no attribute 'mongodb_manager'`
+1. Execute `pytest` no projeto.
+2. Observe os erros de conexão relacionados ao MongoDB.
+
+**Possível causa:**
+- O serviço do MongoDB não está rodando localmente ou não está acessível na porta padrão.
+- O ambiente de testes não está configurado para usar um banco de dados de teste isolado.
 
 **Checklist:**
-- [ ] Documentar no README como subir o MongoDB localmente (ex: via Docker Compose).
-- [ ] Adicionar instrução clara sobre a obrigatoriedade do MongoDB para rodar os testes.
-- [ ] (Opcional) Adicionar um script utilitário para facilitar o setup do ambiente de testes.
-- [ ] Garantir que todos os testes de integração executam sem erro de conexão.
+- [ ] Garantir que o MongoDB está rodando e acessível para os testes.
+- [ ] Documentar como subir o MongoDB localmente (ex: via Docker Compose).
+- [ ] Configurar variáveis de ambiente para apontar para o banco de teste.
+- [ ] Garantir que os testes de integração executam sem erro de conexão.
+
+**Sugestão:**
+Adicionar instruções no README ou scripts utilitários para facilitar a inicialização do ambiente de testes com MongoDB.
 
 ---
 
