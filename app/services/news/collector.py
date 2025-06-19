@@ -13,6 +13,7 @@ from app.core.database import MongoDBManager
 from app.services.ai.processor import process_news_content
 from app.schemas.news import NewsCreate
 from app.services.ai.navigation import navigation_system
+from app.services.web_scraper import ArticleExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -364,22 +365,12 @@ class NewsCollector:
             return results
     
     async def fetch_article_content(self, url: str) -> Optional[Dict[str, Any]]:
-        """Fetch ONLY main article content, avoiding navigation and sidebar noise.
-        
-        Args:
-            url: Article URL to fetch content from.
-            
-        Returns:
-            Dictionary with clean article content or None if failed.
-        """
+        """Fetch ONLY main article content, avoiding navigation and sidebar noise."""
         if not url:
             logger.warning("Empty URL provided for content fetching")
             return None
-            
         try:
             logger.debug(f"Fetching content from: {url}")
-            
-            # Headers without Accept-Encoding to avoid compression issues
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -389,197 +380,40 @@ class NewsCollector:
                 'Cache-Control': 'no-cache',
                 'Pragma': 'no-cache'
             }
-            
             async with httpx.AsyncClient(
-                timeout=30.0, 
+                timeout=30.0,
                 follow_redirects=True,
-                http2=False  # Force HTTP/1.1 to avoid compression issues
+                http2=False
             ) as client:
                 try:
                     response = await client.get(url, headers=headers)
                     response.raise_for_status()
-                    
                 except (httpx.HTTPError, httpx.RequestError) as e:
                     logger.warning(f"Request failed for {url}: {str(e)}")
                     return None
-                
                 html_content = response.text
                 if not html_content or len(html_content) < 100:
                     logger.warning(f"Received very short content from {url}")
                     return None
-                
-                # Verify HTML content
                 if not any(tag in html_content.lower() for tag in ['<html', '<body', '<div', '<p']):
                     logger.warning(f"Content doesn't appear to be HTML for {url}")
                     return None
-                
-                # Parse HTML content
-                soup = BeautifulSoup(html_content, 'html.parser')
-                
-                # AGGRESSIVE CLEANUP - Remove all navigation/sidebar elements
-                unwanted_selectors = [
-                    "script", "style", "nav", "header", "footer", "aside", 
-                    "form", "button", "iframe", "noscript", "meta", "link",
-                    ".menu", ".navigation", ".nav", ".sidebar", ".widget",
-                    ".social", ".share", ".related", ".comments", ".comment",
-                    ".ads", ".advertisement", ".banner", ".popup",
-                    "#menu", "#navigation", "#nav", "#sidebar", "#social",
-                    "[class*='menu']", "[class*='nav']", "[class*='sidebar']",
-                    "[class*='widget']", "[class*='social']", "[class*='ad']"
-                ]
-                
-                for selector in unwanted_selectors:
-                    for element in soup.select(selector):
-                        element.decompose()
-                
-                # Extract title
-                title = ""
-                title_tag = soup.find('title')
-                if title_tag:
-                    title = title_tag.get_text().strip()
-                    # Clean title (remove site name)
-                    title = title.split(' - ')[0].split(' | ')[0].strip()
-                
-                if not title:
-                    h1_tag = soup.find('h1')
-                    if h1_tag:
-                        title = h1_tag.get_text().strip()
-                
-                # Extract description
-                description = ""
-                meta_desc = soup.find('meta', attrs={'name': 'description'})
-                if meta_desc:
-                    description = meta_desc.get('content', '').strip()
-                
-                if not description:
-                    og_desc = soup.find('meta', attrs={'property': 'og:description'})
-                    if og_desc:
-                        description = og_desc.get('content', '').strip()
-                
-                # PRECISE CONTENT EXTRACTION - Priority order
-                content = ""
-                content_found = False
-                
-                # Strategy 1: Look for MAIN CONTENT selectors (most precise)
-                main_content_selectors = [
-                    'article',           # Best option - semantic article tag
-                    '[role="main"]',     # Semantic main role
-                    'main',              # HTML5 main tag
-                    '.entry-content',    # WordPress standard
-                    '.post-content',     # Common blog pattern
-                    '.article-content',  # News sites
-                    '.article-body',     # News sites
-                    '.content-area',     # Many themes
-                    '.post-body'         # Blog pattern
-                ]
-                
-                for selector in main_content_selectors:
-                    try:
-                        content_elem = soup.select_one(selector)
-                        if content_elem:
-                            # Further clean the selected content
-                            for unwanted in content_elem.select('.menu, .nav, .sidebar, .widget, .social, .share, .ads, .related'):
-                                unwanted.decompose()
-                            
-                            content = content_elem.get_text(separator=' ', strip=True)
-                            if len(content) > 200:  # Minimum substantial content
-                                content_found = True
-                                logger.debug(f"Found main content using: {selector} ({len(content)} chars)")
-                                break
-                    except Exception:
-                        continue
-                
-                # Strategy 2: If no main container, get ONLY substantial paragraphs
-                if not content_found:
-                    paragraphs = soup.find_all('p')
-                    content_parts = []
-                    
-                    for p in paragraphs:
-                        text = p.get_text(strip=True)
-                        # Only include paragraphs that look like article content
-                        if (len(text) > 50 and  # Substantial text
-                            not any(skip_word in text.lower() for skip_word in 
-                                   ['menu', 'navegação', 'compartilhar', 'redes sociais', 
-                                    'copyright', 'todos os direitos', 'follow us', 
-                                    'subscribe', 'newsletter', 'cookie'])):
-                            content_parts.append(text)
-                    
-                    if content_parts:
-                        content = ' '.join(content_parts)
-                        content_found = True
-                        logger.debug(f"Found content from {len(content_parts)} clean paragraphs")
-                
-                # Strategy 3: Last resort - look for the longest div with substantial text
-                if not content_found:
-                    divs = soup.find_all('div')
-                    best_div_content = ""
-                    
-                    for div in divs:
-                        div_text = div.get_text(strip=True)
-                        # Look for divs that seem to contain article content
-                        if (200 < len(div_text) < 8000 and  # Reasonable article length
-                            len(div_text) > len(best_div_content)):
-                            # Check if it's not navigation/sidebar content
-                            if not any(skip_word in div_text.lower() for skip_word in 
-                                     ['menu principal', 'navegação', 'todos os direitos',
-                                      'compartilhe', 'redes sociais', 'newsletter']):
-                                best_div_content = div_text
-                    
-                    if best_div_content:
-                        content = best_div_content
-                        content_found = True
-                        logger.debug(f"Found content from best div: {len(content)} chars")
-                
-                # Fallback: Use title + description if no content found
-                if not content_found or len(content) < 100:
-                    if title and description:
-                        content = f"{title}. {description}"
-                        logger.debug(f"Using title + description as fallback content")
-                    elif title:
-                        content = title
-                        logger.debug(f"Using only title as fallback content")
-                
-                # Final content cleanup
-                content = ' '.join(content.split()) if content else ""
-                
-                # Remove any remaining navigation phrases
-                navigation_phrases = [
-                    'home página inicial', 'menu principal', 'navegação',
-                    'compartilhe esta página', 'redes sociais', 'follow us',
-                    'todos os direitos reservados', 'copyright', 'newsletter',
-                    'assine nossa newsletter', 'receba atualizações'
-                ]
-                
-                for phrase in navigation_phrases:
-                    content = content.replace(phrase, '')
-                
-                content = ' '.join(content.split())  # Clean extra spaces
-                
-                # Extract domain info
+                # Usa o extrator modular
+                extractor = ArticleExtractor(html_content)
+                article_data = extractor.extract_article_data()
                 from urllib.parse import urlparse
                 parsed_url = urlparse(url)
                 domain = parsed_url.netloc
-                
-                result = {
-                    'title': title,
-                    'content': content,
-                    'description': description,
-                    'domain': domain,
-                    'url': url,
-                    'source': domain
-                }
-                
+                article_data['domain'] = domain
+                article_data['url'] = url
+                article_data['source'] = domain
                 logger.debug(f"Clean extraction results for {url}:")
-                logger.debug(f"  Title: {len(title)} chars")
-                logger.debug(f"  Content: {len(content)} chars")
-                logger.debug(f"  Description: {len(description)} chars")
-                
-                # Warn if content is still too long (might include navigation)
-                if len(content) > 4000:
-                    logger.warning(f"Content might include navigation elements: {len(content)} chars from {url}")
-                
-                return result
-                
+                logger.debug(f"  Title: {len(article_data.get('title') or '')} chars")
+                logger.debug(f"  Content: {len(article_data.get('content') or '')} chars")
+                logger.debug(f"  Description: {len(article_data.get('description') or '')} chars")
+                if article_data.get('content') and len(article_data['content']) > 4000:
+                    logger.warning(f"Content might include navigation elements: {len(article_data['content'])} chars from {url}")
+                return article_data
         except Exception as e:
             logger.error(f"Error fetching article content from {url}: {str(e)}", exc_info=True)
             return None
