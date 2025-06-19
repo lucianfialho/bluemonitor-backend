@@ -22,7 +22,7 @@ Os testes que dependem de acesso ao banco de dados não são executados corretam
 - [x] Garantir que o MongoDB está rodando e acessível para os testes. (Verificado via `docker compose ps mongodb`)
 - [x] Documentar como subir o MongoDB localmente (ex: via Docker Compose). (Instruções adicionadas no README)
 - [x] Configurar variáveis de ambiente para apontar para o banco de teste. (Verificar arquivo `.env` e exemplos no README)
-- [ ] Garantir que os testes de integração executam sem erro de conexão. (O MongoDB está acessível, mas há falhas relacionadas ao event loop/fixtures async do pytest, não mais erro de conexão)
+- [x] Garantir que os testes de integração executam sem erro de conexão. (O MongoDB está acessível, mas há falhas relacionadas ao event loop/fixtures async do pytest, não mais erro de conexão)
 
 **Sugestão:**
 Adicionar instruções no README ou scripts utilitários para facilitar a inicialização do ambiente de testes com MongoDB.
