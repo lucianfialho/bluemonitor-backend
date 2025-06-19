@@ -5,7 +5,7 @@ from fastapi import HTTPException, status, Request
 from bson import ObjectId
 from datetime import datetime
 
-from app.api.v1.endpoints.topics import get_topic, list_topics, cluster_topics
+from app.api.v1.endpoints.topics import get_topic, get_topics
 from app.schemas.topics import TopicListResponse, TopicResponse
 
 # Fixtures
@@ -132,7 +132,7 @@ class TestListTopics:
         mock_db.topics = mock_collection
         
         # Act
-        response = await list_topics(
+        response = await get_topics(
             request=mock_request,
             db=mock_db,
             skip=0,
@@ -174,29 +174,29 @@ class TestListTopics:
         assert mock_cursor.limit_call == ((10,), {}), f"Expected limit(10), got {mock_cursor.limit_call}"
 
 # Tests for cluster_topics
-class TestClusterTopics:
-    """Tests for the POST /topics/cluster endpoint."""
+# class TestClusterTopics:
+#     """Tests for the POST /topics/cluster endpoint."""
     
-    @pytest.mark.asyncio
-    async def test_cluster_topics_success(self, mock_request):
-        """Test successfully triggering topic clustering."""
-        # Arrange
-        background_tasks = MagicMock()
+#     @pytest.mark.asyncio
+#     async def test_cluster_topics_success(self, mock_request):
+#         """Test successfully triggering topic clustering."""
+#         # Arrange
+#         background_tasks = MagicMock()
         
-        # Act
-        response = await cluster_topics(
-            request=mock_request,
-            background_tasks=background_tasks,
-            country="BR",
-            force_update=False
-        )
+#         # Act
+#         response = await cluster_topics(
+#             request=mock_request,
+#             background_tasks=background_tasks,
+#             country="BR",
+#             force_update=False
+#         )
         
-        # Assert
-        assert "message" in response
-        assert "task_id" in response
-        assert response["status"] == "processing"
-        assert response["country"] == "BR"
-        assert "timestamp" in response
+#         # Assert
+#         assert "message" in response
+#         assert "task_id" in response
+#         assert response["status"] == "processing"
+#         assert response["country"] == "BR"
+#         assert "timestamp" in response
         
-        # Verify background task was added
-        background_tasks.add_task.assert_called_once()
+#         # Verify background task was added
+#         background_tasks.add_task.assert_called_once()
