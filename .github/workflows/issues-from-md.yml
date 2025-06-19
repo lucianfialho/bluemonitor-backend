@@ -6,6 +6,9 @@ on:
     paths:
       - 'docs/issues/*.md'
 
+permissions:
+  issues: write
+
 jobs:
   create-issues:
     runs-on: ubuntu-latest
