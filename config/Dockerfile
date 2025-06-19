@@ -21,7 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar código
 COPY . .
 
-EXPOSE 8000
+# Railway usa PORT dinâmico
+EXPOSE $PORT
 
-# Iniciar sem baixar modelos no build
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Usar variável PORT da Railway
+CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT
