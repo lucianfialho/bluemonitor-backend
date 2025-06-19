@@ -13,6 +13,7 @@ from app.services.task_manager import task_manager
 from app.schemas.navigation import EnhancedNewsResponse, LinkableTerm, NavigationMetadata
 from app.services.ai.navigation import navigation_system
 from app.services.ai.fact_extraction import fact_extraction_system
+from app.core.utils import parse_date_string
 
 from fastapi import (
     APIRouter, 
@@ -262,29 +263,10 @@ def _format_news_item_light(item: dict, include_content: bool = False) -> dict:
         description = content[:150] + "..." if len(content) > 150 else content
         auto_generated_desc = True
     
-    # Handle dates (mantido como está)
-    published_at = item.get("published_at")
-    if isinstance(published_at, str):
-        try:
-            published_at = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
-        except (ValueError, AttributeError):
-            published_at = now
-    
-    created_at = item.get("created_at", now)
-    if isinstance(created_at, str):
-        try:
-            created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-        except (ValueError, AttributeError):
-            created_at = now
-    
-    updated_at = item.get("updated_at", created_at)
-    if isinstance(updated_at, str):
-        try:
-            updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
-        except (ValueError, AttributeError):
-            updated_at = created_at
-    elif updated_at is None:
-        updated_at = created_at
+    # Handle dates (centralizado)
+    published_at = parse_date_string(item.get("published_at"))
+    created_at = parse_date_string(item.get("created_at"))
+    updated_at = parse_date_string(item.get("updated_at")) or created_at or datetime.utcnow()
     
     # ✅ MELHORIA 3: Enriquecimento leve para listas
     categories = item.get("categories", [])
@@ -631,12 +613,7 @@ def format_news_item(item: dict, include_full_content: bool = True) -> dict:
         auto_generated_desc = True
     
     # Format published_at - ensure it's a datetime object or None
-    published_at = item.get("published_at")
-    if isinstance(published_at, str):
-        try:
-            published_at = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
-        except (ValueError, AttributeError):
-            published_at = None
+    published_at = parse_date_string(item.get("published_at"))
     
     # Prepare image data - handle both image_url and nested image object
     image = None
