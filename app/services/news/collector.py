@@ -14,6 +14,7 @@ from app.services.ai.processor import process_news_content
 from app.schemas.news import NewsCreate
 from app.services.ai.navigation import navigation_system
 from app.services.web_scraper import ArticleExtractor
+from app.core.utils import parse_date_string
 
 logger = logging.getLogger(__name__)
 
@@ -32,76 +33,6 @@ class NewsCollector:
         logger.debug(f"SERPAPI_KEY: {'*' * 8}{self.serpapi_key[-4:] if self.serpapi_key else 'N/A'}")
         logger.debug(f"SERPAPI_ENDPOINT: {self.serpapi_url}")
         logger.debug(f"MAX_NEWS_ARTICLES_PER_QUERY: {self.max_articles}")
-        
-    def _parse_publish_date(self, date_str: Any, default: Optional[datetime] = None) -> datetime:
-        """Parse a date string to a datetime object.
-        
-        Args:
-            date_str: The date string to parse (can be str, datetime, or None)
-            default: Default datetime to return if parsing fails
-            
-        Returns:
-            datetime: The parsed datetime or default if parsing fails
-        """
-        if not date_str:
-            return default or datetime.utcnow()
-            
-        # If already a datetime, return it
-        if isinstance(date_str, datetime):
-            return date_str
-            
-        # If it's a date, convert to datetime
-        if hasattr(date_str, 'strftime') and not isinstance(date_str, str):
-            return datetime.combine(date_str, datetime.min.time())
-            
-        # Handle string dates
-        if not isinstance(date_str, str):
-            return default or datetime.utcnow()
-            
-        # Handle relative dates like "2 days ago"
-        if 'ago' in date_str.lower():
-            try:
-                # Extract the number and unit (e.g., "2" and "days" from "2 days ago")
-                parts = date_str.lower().split()
-                if len(parts) >= 2 and parts[0].isdigit() and 'day' in parts[1]:
-                    days_ago = int(parts[0])
-                    return datetime.utcnow() - timedelta(days=days_ago)
-                elif len(parts) >= 2 and parts[0].isdigit() and 'week' in parts[1]:
-                    weeks_ago = int(parts[0])
-                    return datetime.utcnow() - timedelta(weeks=weeks_ago)
-                elif len(parts) >= 2 and parts[0].isdigit() and 'month' in parts[1]:
-                    months_ago = int(parts[0])
-                    # Approximate month as 30 days
-                    return datetime.utcnow() - timedelta(days=months_ago * 30)
-                elif len(parts) >= 2 and parts[0].isdigit() and 'year' in parts[1]:
-                    years_ago = int(parts[0])
-                    # Approximate year as 365 days
-                    return datetime.utcnow() - timedelta(days=years_ago * 365)
-            except Exception as e:
-                logger.warning(f"Error parsing relative date '{date_str}': {str(e)}")
-                return default or datetime.utcnow()
-            
-        # Try common date formats
-        date_formats = [
-            '%Y-%m-%dT%H:%M:%S%z',  # ISO 8601 with timezone
-            '%Y-%m-%dT%H:%M:%S',     # ISO 8601 without timezone
-            '%Y-%m-%d %H:%M:%S',     # SQL datetime
-            '%Y-%m-%d',              # Date only
-            '%d/%m/%Y %H:%M:%S',     # Common in Brazil
-            '%d/%m/%Y',              # Common in Brazil (date only)
-            '%a, %d %b %Y %H:%M:%S %z',  # RFC 822 with timezone
-            '%a, %d %b %Y %H:%M:%S GMT',  # RFC 822 GMT
-        ]
-        
-        for fmt in date_formats:
-            try:
-                return datetime.strptime(date_str, fmt)
-            except ValueError:
-                continue
-        
-        # If we get here, parsing failed
-        logger.warning(f"Failed to parse date string: {date_str}")
-        return default or datetime.utcnow()
         
     async def fetch_news_links(self, query: str, country: str = 'BR') -> List[Dict[str, Any]]:
         """Fetch news links from SerpAPI.
@@ -235,7 +166,7 @@ class NewsCollector:
                         "domain": article_content.get("domain", ""),
                         "favicon": article_content.get("favicon", "")
                     },
-                    "publish_date": self._parse_publish_date(news_item.get("date")),
+                    "publish_date": parse_date_string(news_item.get("date")),
                     "created_at": datetime.utcnow(),
                     "updated_at": datetime.utcnow(),
                     "country": country,
