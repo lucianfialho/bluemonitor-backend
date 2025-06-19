@@ -4,7 +4,9 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Dict, Any, Optional
 
+import httpx
 import pytest
+from asgi_lifespan import LifespanManager
 from fastapi import FastAPI, Depends
 from fastapi.testclient import TestClient
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,23 +41,17 @@ def create_test_application() -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         """Lifespan context manager for the test application."""
         # Initialize MongoDB connection
-        # Create a new MongoDBManager for the app
         app_mongodb_manager = MongoDBManager()
         await app_mongodb_manager.connect_to_mongodb()
-        
-        # Store the manager in app state
         app.state.mongodb_manager = app_mongodb_manager
-        
         # Start the scheduler (if needed)
-        if scheduler.running:
+        if hasattr(scheduler, 'running') and getattr(scheduler, 'running', False):
             scheduler.shutdown()
         scheduler.start()
-        
         try:
             yield
         finally:
-            # Clean up
-            if scheduler.running:
+            if hasattr(scheduler, 'running') and getattr(scheduler, 'running', False):
                 scheduler.shutdown()
             if hasattr(app.state, 'mongodb_manager') and app.state.mongodb_manager.client:
                 await app.state.mongodb_manager.close_mongodb_connection()
@@ -98,27 +94,17 @@ def event_loop():
     yield loop
     loop.close()
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def app() -> FastAPI:
-    """Create a test FastAPI application."""
+    """Create a test FastAPI application (function scope para garantir ciclo de vida correto)."""
     return create_test_application()
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def test_client(app: FastAPI) -> TestClient:
-    """Create a test client for the FastAPI application."""
+    """Create a test client for the FastAPI application (function scope)."""
     return TestClient(app)
 
-@pytest.fixture(scope="module")
-def app() -> FastAPI:
-    """Create a test FastAPI application."""
-    return create_test_application()
-
-@pytest.fixture(scope="module")
-def test_client(app: FastAPI) -> TestClient:
-    """Create a test client for the FastAPI application."""
-    return TestClient(app)
-
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 async def db() -> AsyncGenerator[AsyncIOMotorDatabase, None]:
     """Create a test database connection."""
     # Create a new MongoDBManager instance for testing
@@ -158,19 +144,31 @@ async def task_manager():
     # Clean up
     manager.tasks.clear()
 
-@pytest.fixture
-async def test_news(db: AsyncIOMotorDatabase):
-    """Create test news data in the database."""
-    # Drop the collection to ensure a clean state
-    await db.news.drop()
-    
-    # Create test data
+@pytest.fixture(scope="function")
+async def test_db(app: FastAPI) -> AsyncGenerator[AsyncIOMotorDatabase, None]:
+    """Retorna o banco de dados usado pelo app FastAPI nos testes."""
+    mongodb_manager = app.state.mongodb_manager
+    db = mongodb_manager.db
+    # Limpa o banco antes do teste
+    collections = await db.list_collection_names()
+    for collection in collections:
+        await db.drop_collection(collection)
+    await mongodb_manager._ensure_indexes()
+    yield db
+    # Limpa após o teste
+    await db.news.delete_many({})
+
+@pytest.fixture(scope="function")
+async def test_news(test_db: AsyncIOMotorDatabase):
+    """Cria dados de notícia de teste no banco do app."""
+    await test_db.news.drop()
     test_news_data = [
         {
-            "_id": "507f1f77bcf86cd799439011",
-            "title": "Test News 1",
+            "_id": f"507f1f77bcf86cd7994390{i:02d}",
+            "title": f"Test News {i+1}",
             "content": "This is a test news article about autism.",
-            "url": "https://example.com/news/1",
+            "url": f"https://example.com/news/{i+1}",
+            "original_url": f"https://example.com/original-news/{i+1}",  # Garante unicidade
             "source": "Test Source",
             "source_name": "Test Source",
             "source_domain": "example.com",
@@ -189,41 +187,53 @@ async def test_news(db: AsyncIOMotorDatabase):
         }
         for i in range(3)
     ]
-    
-    # Add one more with the same topic
-    related_news.append({
-        "title": "Same Topic News",
-        "description": "This shares a topic with the main news",
-        "url": "https://example.com/same-topic",
-        "original_url": "https://example.com/original-same-topic",
-        "source_name": "Test Source",
-        "source_domain": "example.com",
-        "published_at": "2023-01-01T12:00:00Z",
-        "topics": ["test"],
-        "language": "en",
-        "country": "US",
-        "metrics": {
-            "views": 0,
-            "shares": 0,
-            "engagement_rate": 0.0,
-            "avg_read_time": 0
-        },
-        "created_at": "2023-01-01T12:00:00Z",
-        "updated_at": "2023-01-01T12:00:00Z"
-    })
-    
-    # Insert related news
-    if related_news:
-        await db.news.insert_many(related_news)
-    
-    # Add metrics
-    await db.metrics.insert_one({
-        "news_id": result.inserted_id,
+    related_news = [
+        {
+            "_id": "507f1f77bcf86cd799439099",
+            "title": "Same Topic News",
+            "description": "This shares a topic with the main news",
+            "url": "https://example.com/same-topic",
+            "original_url": "https://example.com/original-same-topic",
+            "source_name": "Test Source",
+            "source_domain": "example.com",
+            "published_at": "2023-01-01T12:00:00Z",
+            "topics": ["test"],
+            "language": "en",
+            "country": "US",
+            "metrics": {
+                "views": 0,
+                "shares": 0,
+                "engagement_rate": 0.0,
+                "avg_read_time": 0
+            },
+            "created_at": "2023-01-01T12:00:00Z",
+            "updated_at": "2023-01-01T12:00:00Z"
+        }
+    ]
+    await test_db.news.insert_many(test_news_data + related_news)
+    await test_db.metrics.insert_one({
+        "news_id": test_news_data[0]["_id"],
         "views": 100,
         "shares": 20,
         "engagement_rate": 0.85,
         "avg_read_time": 120,
         "last_viewed_at": "2023-01-01T12:00:00Z"
     })
-    
-    return news_data
+    return test_news_data[0]
+
+@pytest.fixture(scope="function")
+async def async_client(app: FastAPI) -> AsyncGenerator[httpx.AsyncClient, None]:
+    """Cria um AsyncClient para testes de integração, garantindo ciclo de vida do app e acesso ao mongodb_manager via LifespanManager."""
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
+
+# DICA: Use a fixture async_client para testes de integração que dependem do ciclo de vida do app (lifespan),
+# pois ela garante que o app.state.mongodb_manager estará disponível.
+# Exemplo de uso em um teste:
+# async def test_alguma_coisa(async_client, test_news):
+#     response = await async_client.get("/api/v1/news")
+#     assert response.status_code == 200
+#
+# Para testes unitários que não dependem do ciclo de vida, use test_client normalmente.
