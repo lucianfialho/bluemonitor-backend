@@ -446,6 +446,38 @@ Com a aplicação em execução, acesse:
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 
+## 🗄️ Banco de Dados para Testes e Desenvolvimento
+
+### Subindo o MongoDB com Docker Compose
+
+O projeto já inclui um arquivo `docker-compose.yml` configurado para o MongoDB. Para iniciar o serviço localmente:
+
+```bash
+docker compose up -d mongodb
+```
+
+Isso irá subir o MongoDB na porta padrão (`27017`).
+
+### Variáveis de Ambiente para Testes
+
+- Certifique-se de que o arquivo `.env` (ou `.env.example`) contém as variáveis:
+  - `MONGODB_URI=mongodb://localhost:27017/test_bluemonitor`
+  - Ou ajuste conforme o nome do banco de teste desejado.
+- Para rodar os testes de integração, o banco de dados de teste deve estar acessível e limpo.
+
+### Dicas para Testes Automatizados com MongoDB
+
+- Sempre suba o MongoDB antes de rodar os testes.
+- Se usar Docker, prefira `docker compose up -d mongodb` para garantir isolamento.
+- Se encontrar erros de event loop/asyncio com pytest, consulte a seção de troubleshooting abaixo.
+
+### Troubleshooting: Pytest + FastAPI + MongoDB
+
+- Se aparecer erro como `got Future <...> attached to a different loop`, revise as fixtures async e a inicialização do app de testes.
+- Veja exemplos de configuração em `tests/conftest.py` e na documentação do pytest-asyncio.
+
+---
+
 ## 🧪 Testes
 
 ```bash
@@ -498,37 +530,3 @@ Este projeto está licenciado sob a licença MIT - veja o arquivo [LICENSE](LICE
 ---
 
 Desenvolvido com ❤️ pela equipe BlueMonitor
-
-## Testing
-
-```bash
-# Run tests
-pytest
-
-# Run tests with coverage
-pytest --cov=app --cov-report=term-missing
-```
-
-## Deployment
-
-### Docker
-
-Build and run the application using Docker Compose:
-
-```bash
-docker-compose up --build
-```
-
-### Production
-
-For production deployments, you'll want to:
-
-1. Set `ENVIRONMENT=production` in your `.env` file
-2. Configure proper CORS settings
-3. Set up a reverse proxy (Nginx, Traefik, etc.)
-4. Configure HTTPS
-5. Set up monitoring and logging
-
-## License
-
-MIT
